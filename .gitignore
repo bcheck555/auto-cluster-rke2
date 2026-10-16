@@ -1,0 +1,31 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.token
+secrets/
+config.local.yaml
+
+# Generated lab state and VM artifacts
+lab/state/
+lab/results/
+lab/images/
+lab/disks/
+lab/credentials/
+*.qcow2
+*.raw
+*.iso
+
+# Local toolchains/build output
+.tools/
+bin/
+dist/
+coverage.out
+*.test
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
