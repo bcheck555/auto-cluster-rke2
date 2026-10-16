@@ -20,4 +20,4 @@ See [docs/architecture.md](docs/architecture.md), [docs/trust-and-threat-model.m
 
 ## Development
 
-Go toolchain is not currently installed on the development host. Select and pin the build toolchain and module path before the first Go implementation slice. Do not install host packages or alter the host without approval; a verified, repository-local toolchain or approved alternative can be evaluated.
+The project Go module is pinned to Go 1.27.2. The host has no system Go toolchain, so Go tests/builds have not run; do not install host packages or alter the host without approval. Evaluate a checksum-verified repository-local Go toolchain or another approved approach before the first Go code slice. The module path `autonomous-rke2` is provisional until a remote repository namespace is chosen.

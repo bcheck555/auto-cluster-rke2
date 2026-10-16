@@ -1,0 +1,30 @@
+apiVersion: autonomous-rke2.nousresearch.com/v1alpha1
+kind: ClusterPolicy
+metadata:
+  name: autonomous-rke2
+spec:
+  clusterName: autonomous-rke2
+  controlPlane:
+    desired: 3
+    allowWorkloads: true
+  workers:
+    autoJoin: true
+    promotionEligible: true
+  discovery:
+    automatic: true
+    transport: mdns
+    trustOnDiscovery: false
+  recovery:
+    replaceFailedControlPlane: true
+    fencingRequired: true
+    automaticQuorumReset: false
+  virtualization:
+    kubevirt:
+      enabled: false
+  nodeOS:
+    distribution: rocky
+    majorVersion: 9
+    minorVersion: 8
+    architecture: x86_64
+    selinux: enforcing
+    firewall: firewalld

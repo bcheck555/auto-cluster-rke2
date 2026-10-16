@@ -1,0 +1,11 @@
+# Rocky Linux GenericCloud image pin (candidate; image not downloaded)
+name: Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2
+architecture: x86_64
+url: https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2
+checksum_url: https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2.CHECKSUM
+signature_url: https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2.CHECKSUM.asc
+verified: false
+verification_required_before_use:
+  - verify CHECKSUM.asc signature against official Rocky key
+  - verify image SHA-256 against signed CHECKSUM file
+  - record key fingerprint and actual SHA-256 in lab/results
