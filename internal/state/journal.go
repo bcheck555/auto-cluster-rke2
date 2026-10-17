@@ -18,6 +18,8 @@ type Operation struct {
 
 // Journal provides durable reads and revision-guarded updates. A revision
 // conflict requires re-read/reconciliation, never blind side-effect replay.
+// Revision zero means absent; creation writes revision one, and an update writes
+// expectedRevision+1 while retaining the operation's cluster, host, and kind.
 type Journal interface {
 	Get(ctx context.Context, operationID string) (Operation, error)
 	CompareAndSwap(ctx context.Context, expectedRevision uint64, next Operation) error

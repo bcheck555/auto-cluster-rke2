@@ -1,6 +1,10 @@
 # Component contracts (implementation blueprint)
 
-These are proposed Go signatures, not yet implemented. Keep provider interfaces narrow so unit tests can inject deterministic fakes without invoking system services. Every method accepts context, returns typed errors, and must avoid logging secrets.
+These Go signatures define component boundaries. Identity and journal filesystem
+implementations now exist; see [durable storage](durable-state.md). Other provider
+implementations remain pending. Keep interfaces narrow so unit tests can inject
+deterministic fakes without invoking system services. Every method accepts
+context, returns typed errors, and must avoid logging secrets.
 
 ```go
 package identity

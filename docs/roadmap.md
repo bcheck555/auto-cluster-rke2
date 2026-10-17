@@ -7,8 +7,10 @@ portability remains unvalidated. The development host stays outside the cluster.
 
 ## Current baseline
 
-- Go interfaces cover identity, discovery, bootstrap authority, operation journals,
-  and fencing evidence. They are contracts, not working agent/controller daemons.
+- Durable host identity and revision-guarded operation journals are implemented
+  with private Linux filesystem storage. See [storage behavior and validation](durable-state.md).
+- Go interfaces cover discovery, bootstrap authority, and fencing evidence.
+  Agent/controller daemons remain unimplemented.
 - The isolated three-VM lab and signed offline image workflow are implemented.
   See [current image and replacement results](offline-image-results.md),
   [image lifecycle](offline-images.md), and [original lab results](phase1-lab-results.md).
@@ -18,21 +20,18 @@ portability remains unvalidated. The development host stays outside the cluster.
 
 ## Remaining implementation
 
-1. Implement durable host identity and revision-guarded operation journals.
-   Verify restrictive permissions, restart stability, concurrent creation,
-   corruption handling, and recovery from interrupted writes.
-2. Implement authenticated discovery and bootstrap authority. Treat mDNS/DNS-SD
+1. Implement authenticated discovery and bootstrap authority. Treat mDNS/DNS-SD
    as endpoint hints only; verify signed responses and persistent cluster identity.
    Single-use signed grants must persist atomically. At least three concurrent
    bootstrap requests must produce exactly one cluster identity. An unreachable
    cluster never authorizes a new one.
-3. Implement the host agent and systemd service, pinned offline RKE2 configuration,
+2. Implement the host agent and systemd service, pinned offline RKE2 configuration,
    stable registration endpoint, and deterministic role assignment. Use typed,
    allowlisted operations, redact credentials, and resume safely after interruption.
    Start with one server, then reach three voting servers and two workers only
    after capacity assessment and approval for lab expansion. Verify etcd health
    separately from Kubernetes Node Ready and permit workloads on servers.
-4. Implement the membership controller, least-privilege Kubernetes manifests,
+3. Implement the membership controller, least-privilege Kubernetes manifests,
    documented etcd membership operations, and a narrowly scoped host fencing
    service. Guests receive no general libvirt or arbitrary command access.
    Recovery must prove quorum, establish failure evidence, obtain authority,
@@ -40,7 +39,7 @@ portability remains unvalidated. The development host stays outside the cluster.
    member, and journal the authorized worker-to-server transition through etcd
    synchronization. Ambiguity stops recovery. Reconcile returning nodes without
    duplicate identities or members; retain append-only, redacted audit evidence.
-5. Implement and run the acceptance suite below on Rocky guests. Require bounded
+4. Implement and run the acceptance suite below on Rocky guests. Require bounded
    timeouts, explicit preconditions, before/after inventory checks, and results in
    ignored `lab/results/`. Complete two clean-room runs using tracked sources and
    approved local inputs. Expected results never count as observed passes.
