@@ -1,0 +1,25 @@
+{
+  "Plan": {
+    "ClusterID": "REPLACE_WITH_RESERVED_CLUSTER_UUID",
+    "PolicyDigest": "REPLACE_WITH_64_HEX_AUTHORITY_POLICY_DIGEST",
+    "Mode": "bootstrap",
+    "Role": "server",
+    "NodeName": "rke2-r9-cp01",
+    "NodeIP": "192.168.250.11",
+    "Interface": "rke2lab0",
+    "RegistrationURL": "https://registration.lab.invalid:9345",
+    "APIURL": "https://registration.lab.invalid:6443",
+    "TokenFile": "/etc/autonomous-rke2/credentials/server-token",
+    "AgentTokenFile": "/etc/autonomous-rke2/credentials/agent-token",
+    "CoreImageSHA256": "REPLACE_WITH_VERIFIED_CORE_ARCHIVE_SHA256",
+    "FlannelImageSHA256": "REPLACE_WITH_VERIFIED_FLANNEL_ARCHIVE_SHA256",
+    "CoreDNSSHA256": "REPLACE_WITH_VERIFIED_OFFLINE_COREDNS_CONFIG_SHA256",
+    "MinVotingServers": 1
+  },
+  "StateDirectory": "/var/lib/autonomous-rke2",
+  "AuthorityEndpoints": ["https://authority.lab.invalid:9443"],
+  "AuthorityCA": "/etc/autonomous-rke2/authority-ca.crt",
+  "AuthorityCertificate": "/etc/autonomous-rke2/host.crt",
+  "AuthoritySigningKey": "REPLACE_WITH_BASE64_PUBLIC_SIGNING_KEY",
+  "Observer": {"CA": "", "Cert": "", "Key": ""}
+}

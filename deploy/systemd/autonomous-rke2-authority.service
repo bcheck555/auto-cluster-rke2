@@ -1,0 +1,32 @@
+[Unit]
+Description=RKE2 enrolled-host bootstrap authority
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/autonomous-rke2/authority.json
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/libexec/autonomous-rke2/bootstrap-authority -config /etc/autonomous-rke2/authority.json
+Restart=on-failure
+RestartPreventExitStatus=2
+RestartSec=15s
+TimeoutStopSec=10s
+StateDirectory=autonomous-rke2-authority
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/autonomous-rke2-authority
+
+[Install]
+WantedBy=multi-user.target

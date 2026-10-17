@@ -1,0 +1,48 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: autonomous-rke2-health
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+  - nonResourceURLs: ["/readyz"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: autonomous-rke2-health
+subjects:
+  - kind: User
+    name: autonomous-rke2-health
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: autonomous-rke2-health
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: autonomous-rke2-health-identity
+  namespace: kube-system
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["autonomous-rke2-identity"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: autonomous-rke2-health-identity
+  namespace: kube-system
+subjects:
+  - kind: User
+    name: autonomous-rke2-health
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: autonomous-rke2-health-identity
+  apiGroup: rbac.authorization.k8s.io

@@ -14,6 +14,9 @@ type Operation struct {
 	Phase     string
 	Revision  uint64
 	UpdatedAt time.Time
+	// Details carries caller-validated, redacted checkpoint JSON. Never store
+	// registration tokens, private keys, or raw command/error output here.
+	Details string
 }
 
 // Journal provides durable reads and revision-guarded updates. A revision

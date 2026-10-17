@@ -1,0 +1,21 @@
+{
+  "StateDirectory": "/var/lib/autonomous-rke2-authority/ledger",
+  "KeyDirectory": "/var/lib/autonomous-rke2-authority/signing-key",
+  "Endpoint": "https://authority.lab.invalid:9443",
+  "ListenAddress": "192.0.2.1:9443",
+  "Policy": {
+    "Hosts": {
+      "REPLACE_WITH_ENROLLED_HOST_ID": {
+        "PublicKey": "REPLACE_WITH_BASE64_ENROLLED_PUBLIC_KEY",
+        "Role": "server",
+        "Bootstrap": true
+      }
+    }
+  },
+  "ServerTLS": {
+    "CA": "",
+    "Cert": "/etc/autonomous-rke2/authority-server.crt",
+    "Key": "/etc/autonomous-rke2/credentials/authority-server.key"
+  },
+  "ClientCA": "/etc/autonomous-rke2/host-client-ca.crt"
+}

@@ -12,7 +12,10 @@ portability remains unvalidated. The development host stays outside the cluster.
 - Authenticated HTTPS discovery, persistent cluster pins, and an enrolled-host
   bootstrap/join authority with atomic single-use grants are implemented.
   See [trust provisioning, APIs, and validation](bootstrap-authority.md).
-- Agent/controller daemons and concrete fencing providers remain unimplemented.
+- Host-agent and authority binaries, systemd templates, pinned offline runtime
+  configuration, signed grant-status resumption, and independent Node/etcd health
+  checks are implemented. See [deployment inputs and execution gates](host-agent.md).
+- Membership controller and concrete fencing providers remain unimplemented.
 - The isolated three-VM lab and signed offline image workflow are implemented.
   See [current image and replacement results](offline-image-results.md),
   [image lifecycle](offline-images.md), and [original lab results](phase1-lab-results.md).
@@ -22,15 +25,13 @@ portability remains unvalidated. The development host stays outside the cluster.
 
 ## Remaining implementation
 
-1. Implement the host agent and systemd service, pinned offline RKE2 configuration,
-   stable registration endpoint, and deterministic role assignment. Use typed,
-   allowlisted operations, redact credentials, and resume safely after interruption.
-   Integrate authority deployment, operator-provisioned trust/certificates,
-   a filtered authority path, and an mDNS hint provider or explicit endpoints;
-   validate multicast on the exact lab network before enabling automatic browsing.
-   Start with one server, then reach three voting servers and two workers only
-   after capacity assessment and approval for lab expansion. Verify etcd health
-   separately from Kubernetes Node Ready and permit workloads on servers.
+1. Execute the [host-agent deployment gates](host-agent.md) with approved trust
+   inputs, authority networking, and an operator-managed stable registration
+   endpoint. Initial implementation uses explicit authenticated endpoint hints;
+   validate any future mDNS browser on the exact lab network before enabling it.
+   Observe one server, then three voting servers and two workers only after
+   capacity assessment and approval for expansion. Verify Node and etcd health,
+   scheduling, SELinux service execution, and interruption behavior on guests.
 2. Implement the membership controller, least-privilege Kubernetes manifests,
    documented etcd membership operations, and a narrowly scoped host fencing
    service. Guests receive no general libvirt or arbitrary command access.

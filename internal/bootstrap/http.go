@@ -29,8 +29,16 @@ type joinRequest struct {
 }
 type wireError struct{ Code string }
 
+type statusRequest struct {
+	HostID      string
+	OperationID string
+	Challenge   string
+}
+
 func errorCode(err error) (int, string) {
 	switch {
+	case errors.Is(err, ErrGrantNotFound):
+		return http.StatusNotFound, "grant-not-found"
 	case errors.Is(err, ErrReplay):
 		return http.StatusConflict, "replay"
 	case errors.Is(err, ErrClusterMismatch):
@@ -54,6 +62,8 @@ func errorCode(err error) (int, string) {
 
 func fromCode(code string) error {
 	switch code {
+	case "grant-not-found":
+		return ErrGrantNotFound
 	case "replay":
 		return ErrReplay
 	case "cluster-mismatch":
@@ -120,6 +130,16 @@ func HTTPHandler(a *FileAuthority) http.Handler {
 		defer cancel()
 		var response any = struct{}{}
 		switch r.URL.Path {
+		case "/v1/grant-status":
+			var query statusRequest
+			if !decode(&query) {
+				return
+			}
+			if query.HostID != identity.PublicKeyID(key) {
+				reply(ErrDenied)
+				return
+			}
+			response, err = a.GrantStatus(ctx, query.HostID, query.OperationID, query.Challenge)
 		case "/v1/bootstrap":
 			var req BootstrapRequest
 			if !decode(&req) {
@@ -211,6 +231,23 @@ func NewHTTPClient(endpoint, pinnedCluster string, c *tls.Config, v Verifier) (*
 }
 
 func (c *HTTPClient) Close() { c.transport.CloseIdleConnections() }
+
+func (c *HTTPClient) GrantStatus(ctx context.Context, host, operation, challenge string) (GrantStatus, error) {
+	var s GrantStatus
+	if host != c.host {
+		return s, ErrDenied
+	}
+	if err := c.call(ctx, "/v1/grant-status", statusRequest{HostID: host, OperationID: operation, Challenge: challenge}, &s); err != nil {
+		return GrantStatus{}, err
+	}
+	if s.ClusterID != c.cluster {
+		return GrantStatus{}, ErrClusterMismatch
+	}
+	if err := c.verifier.VerifyGrantStatus(ctx, s, host, operation, challenge); err != nil {
+		return GrantStatus{}, err
+	}
+	return s, nil
+}
 
 func (c *HTTPClient) call(ctx context.Context, path string, input, output any) error {
 	data, err := json.Marshal(input)

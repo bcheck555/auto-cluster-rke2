@@ -28,6 +28,11 @@ The SSH key is in ignored `lab/credentials/`; verification evidence is in ignore
 
 ## Development
 
+`make build` produces Linux amd64 host-agent and bootstrap-authority binaries.
+See [initial lifecycle and deployment](docs/host-agent.md) for configuration,
+systemd templates, public CSR enrollment, and independent health checks. These
+services are implemented and tested locally; live lab bootstrap remains gated.
+
 The [offline image lifecycle and replacement workflow](docs/offline-images.md)
 builds three signed profiles and gates publication and replacement on offline
 boot, reboot, and disposable cluster validation. OS images keep firewalld active;

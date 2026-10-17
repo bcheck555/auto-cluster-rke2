@@ -99,11 +99,22 @@ func TestMTLSGrantLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	status, err := f.clients[0].GrantStatus(ctx, g.HostID, g.OperationID, strings.Repeat("d", 64))
+	if err != nil || status.Consumed {
+		t.Fatalf("issued status: %v", err)
+	}
 	if err := f.clients[1].ConsumeBootstrapGrant(ctx, g); !errors.Is(err, ErrDenied) {
 		t.Fatalf("wrong host consumed: %v", err)
 	}
 	if err := f.clients[0].ConsumeBootstrapGrant(ctx, g); err != nil {
 		t.Fatal(err)
+	}
+	status, err = f.clients[0].GrantStatus(ctx, g.HostID, g.OperationID, strings.Repeat("e", 64))
+	if err != nil || !status.Consumed {
+		t.Fatalf("consumed status: %v", err)
+	}
+	if _, err := f.clients[1].GrantStatus(ctx, g.HostID, g.OperationID, strings.Repeat("f", 64)); !errors.Is(err, ErrDenied) {
+		t.Fatalf("wrong-host status: %v", err)
 	}
 	if err := f.clients[0].ConsumeBootstrapGrant(ctx, g); !errors.Is(err, ErrReplay) {
 		t.Fatalf("remote replay: %v", err)

@@ -1,0 +1,32 @@
+[Unit]
+Description=Authorized offline RKE2 host convergence
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/autonomous-rke2/host.json
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/libexec/autonomous-rke2/host-agent -config /etc/autonomous-rke2/host.json
+Restart=on-failure
+RestartPreventExitStatus=2
+RestartSec=15s
+TimeoutStopSec=20s
+StateDirectory=autonomous-rke2
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/autonomous-rke2 /etc/rancher/rke2 /var/lib/rancher/rke2
+
+[Install]
+WantedBy=multi-user.target

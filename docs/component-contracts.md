@@ -3,7 +3,8 @@
 These Go signatures define component boundaries. Identity and journal filesystem
 implementations now exist; see [durable storage](durable-state.md). Authenticated
 discovery and bootstrap authority are [implemented](bootstrap-authority.md);
-concrete fencing providers and daemons remain pending. Keep interfaces narrow so unit tests can inject
+the initial host-agent/authority daemons now exist. Membership and concrete
+fencing providers remain pending. Keep interfaces narrow so unit tests can inject
 deterministic fakes without invoking system services. Every method accepts
 context, returns typed errors, and must avoid logging secrets.
 
@@ -140,6 +141,7 @@ type Operation struct {
     Phase string
     Revision uint64
     UpdatedAt time.Time
+    Details string // strictly decoded, redacted caller checkpoint JSON
 }
 
 type Journal interface {

@@ -80,8 +80,11 @@ single-use execution gate; persist the host operation and grant before consuming
 and consume before executing side effects. The authority records consumption
 before acknowledging success. Local consumers are trusted executors acting for
 the bound host. Remote consumption additionally requires its verified client key.
-A consumed, expired, lost, or ambiguously acknowledged grant requires inspection
-and operator reconciliation; these APIs never blindly reissue it. No RKE2
+Lost issuance/consumption acknowledgments can now be resolved using fresh signed
+`GrantStatus` evidence for the exact host, operation, and challenge. Consumed
+grants support safe host-checkpoint resumption after expiry; expired unconsumed
+grants and mismatched evidence require operator reconciliation. APIs never
+blindly reissue grants. No RKE2
 installation/join action is performed by the authority itself.
 
 Only a trusted local caller may invoke `ConfirmClusterActive`, after independently
@@ -93,8 +96,8 @@ work. Failure to reach a previously initialized cluster never permits another.
 
 ## Transport and deployment boundary
 
-`bootstrap.HTTPHandler` exposes four POST routes: `/v1/bootstrap`, `/v1/join`,
-`/v1/bootstrap/consume`, and `/v1/join/consume`. Every route requires TLS 1.3 and
+`bootstrap.HTTPHandler` exposes POST routes `/v1/bootstrap`, `/v1/join`,
+`/v1/bootstrap/consume`, `/v1/join/consume`, and `/v1/grant-status`. Every route requires TLS 1.3 and
 a verified Ed25519 client certificate whose public key matches the request or
 grant host. Requests are size bounded and strictly decoded; errors contain only
 fixed codes. Initialization, activation, key access, and command execution are
@@ -106,13 +109,13 @@ from verified persistent discovery. Responses must match the host, operation,
 cluster, policy, signature, and validity. Network errors return unavailable;
 clients never create a local authority or follow redirects.
 
-A future daemon may combine public discovery and grant handlers on one listener
+The implemented `cmd/bootstrap-authority` combines public discovery and grant handlers on one listener
 using `tls.VerifyClientCertIfGiven` and provisioned `ClientCAs`. Grant handlers
 still require verified certificates; discovery remains public. Set TLS minimum
 version and explicit HTTP header/read/write/idle timeouts. Do not expose an
 administrative HTTP route. Lab CA/trust provisioning, the filtered authority
 communication path, stable RKE2 registration endpoint, and systemd deployment
-remain explicit host-agent integration tasks and existing approval gates.
+remain explicit [host-agent deployment tasks](host-agent.md) and existing approval gates.
 
 ## Validation
 
