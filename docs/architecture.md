@@ -17,11 +17,11 @@ Policy defaults to three voting RKE2 servers, with workloads enabled on servers 
 
 ## Rocky/RHEL node platform
 
-All test nodes use the same pinned x86_64 Rocky Linux 9 GenericCloud image plus cloud-init. Provisioning must create unique machine-id, hostname, SSH host keys, and cluster identity. Guest configuration uses DNF/RPM, NetworkManager, firewalld, systemd, SELinux Enforcing, and RKE2/containerd. Install RKE2 from verified EL9 RPM repositories; install `rke2-selinux`, configure `selinux: true` on both server and agent, and verify enforcing status before/after service start. No Ubuntu guest configuration is permitted. RHEL 9 portability is a separate evidence-based comparison in `docs/rocky-to-rhel9.md`.
+All profiles derive from the same pinned x86_64 Rocky 9.8 GenericCloud source. Signed standalone OS, server, and agent images are built offline; deployment cloud-init supplies identity, networking, operator access, and validation. Provisioning creates unique machine IDs, host IDs, SSH host keys, domain UUIDs, and NVRAM. Cluster identity is created only during separately authorized bootstrap. The OS profile keeps firewalld enabled and active; RKE2 profiles keep it installed, inactive, and disabled. Both RKE2 services remain masked in unjoined guests. Install RKE2 and `rke2-selinux` from verified local EL9 RPM closures, configure `selinux: true`, and preserve SELinux Enforcing. Use Flannel VXLAN; pod NetworkPolicy enforcement is deferred. No Ubuntu guest configuration is permitted. See `docs/offline-images.md`; RHEL validation remains separate in `docs/rocky-to-rhel9.md`.
 
 ## Initial topology and constraints
 
-Start with three Rocky VMs, then expand to five. The development host remains outside Kubernetes. Current assessment shows 251 GiB RAM and 618 GiB free in `/var`, but backing SSD and privileged firewall state are unverified. Existing `hyperv1`, `default` network, and `ad-hyperv-lab` pool are protected. No VM or network creation is authorized by this design document; present exact plan and obtain approval first.
+The approved Phase 1 lab contains three Rocky VMs on an isolated network with no bridge IP, DHCP, or forwarding and with IPv6 filtered at guest NICs. The development host remains outside Kubernetes. Image and replacement preflight preserve 300 GiB disk and 32 GiB RAM reserves, including existing lab commitments and temporary resources. Physical media remains unverified. `hyperv1`, `default`, and every pre-existing pool remain protected. Expansion to five nodes and production cluster bootstrap remain later tasks; the approved replacement scope is limited to the three unjoined Phase 1 guests.
 
 ## Failure guarantees and non-goals
 

@@ -1,0 +1,12 @@
+version: 2
+renderer: NetworkManager
+ethernets:
+  labnet:
+    match:
+      macaddress: @@MAC_YAML@@
+    set-name: rke2lab0
+    dhcp4: false
+    dhcp6: false
+    addresses:
+      - @@ADDRESS_YAML@@
+    link-local: []

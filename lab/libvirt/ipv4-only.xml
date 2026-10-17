@@ -1,0 +1,5 @@
+<filter name='autonomous-rke2-ipv4-only' chain='root'>
+  <rule action='drop' direction='inout' priority='100'>
+    <mac protocolid='0x86dd'/>
+  </rule>
+</filter>

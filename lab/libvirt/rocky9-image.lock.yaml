@@ -1,11 +1,17 @@
-# Rocky Linux GenericCloud image pin (candidate; image not downloaded)
+# Rocky Linux GenericCloud image pin (signature and local image verified)
 name: Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2
 architecture: x86_64
+catalog_verified_on: 2026-10-16
 url: https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2
 checksum_url: https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2.CHECKSUM
 signature_url: https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2.CHECKSUM.asc
-verified: false
-verification_required_before_use:
-  - verify CHECKSUM.asc signature against official Rocky key
-  - verify image SHA-256 against signed CHECKSUM file
-  - record key fingerprint and actual SHA-256 in lab/results
+signing_fingerprint: 21CB256AE16FC54C6E652949702D426D350D275D
+fingerprint_source: https://rockylinux.org/resources/gpg-key-info
+verified: true
+verified_on: 2026-10-16
+sha256: 92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8
+size_bytes: 645988352
+virtual_size_bytes: 10737418240
+key_url: https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9
+verification_report: lab/results/rocky9-image-verification.json
+# This records the observed artifact; apply independently re-verifies every input.

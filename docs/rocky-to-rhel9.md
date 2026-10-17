@@ -8,7 +8,7 @@ Status: not yet validated. Rocky Linux 9 is the required initial test guest; RHE
 | Package management | DNF/RPM | DNF/RPM; confirm enabled Red Hat repositories and entitlement |
 | RKE2 packages | Rancher EL9 RPM repositories with signature verification | Verify exact RHEL 9 support matrix and repository/channel/package compatibility |
 | SELinux | Enforcing; `rke2-selinux` and `selinux: true` on all roles | Confirm policy RPM availability/dependencies and process/file labels on RHEL |
-| Firewall | firewalld active; explicit verified RKE2 rules | Confirm default zones/services and persist/validate same required traffic |
+| Firewall | OS profile active/enabled; RKE2 profiles installed, inactive/disabled | Validate the same profile policy and isolation on RHEL; no RHEL claim yet |
 | Networking | NetworkManager; cloud-init network datasource behavior | Confirm image datasource and NetworkManager keyfile behavior on chosen RHEL image |
 | Machine identity | cloud-init resets machine-id/SSH keys and assigns unique names | Verify RHEL image cloning/cloud-init semantics and host key rotation |
 | Support lifecycle | Rocky minor release and image support documented when pinned | Red Hat lifecycle, subscription, kernel, and certified support constraints |

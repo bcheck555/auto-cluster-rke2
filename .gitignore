@@ -9,6 +9,7 @@ secrets/
 config.local.yaml
 
 # Generated lab state and VM artifacts
+lab/artifacts/
 lab/state/
 lab/results/
 lab/images/
@@ -24,6 +25,11 @@ bin/
 dist/
 coverage.out
 *.test
+
+# Python cache/test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
 # Editors / OS
 .idea/

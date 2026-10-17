@@ -1,0 +1,4 @@
+<network>
+  <name>autonomous-rke2-isolated</name>
+  <bridge name="virbr-rke2" stp="on" delay="0"/>
+</network>

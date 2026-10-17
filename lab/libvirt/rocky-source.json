@@ -1,0 +1,15 @@
+{
+  "image": {
+    "kind": "upstream",
+    "name": "Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
+    "path": "lab/artifacts/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
+    "staged_path": "lab/artifacts/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
+    "checksum_path": "lab/artifacts/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2.CHECKSUM",
+    "signature_path": "lab/artifacts/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2.CHECKSUM.asc",
+    "keyring_path": "lab/artifacts/rocky-release-keyring.gpg",
+    "signing_fingerprint": "21CB256AE16FC54C6E652949702D426D350D275D",
+    "sha256": "92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8",
+    "max_size_bytes": 21474836480,
+    "max_virtual_size_bytes": 21474836480
+  }
+}

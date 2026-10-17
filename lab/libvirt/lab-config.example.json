@@ -1,0 +1,74 @@
+{
+  "project": "autonomous-rke2",
+  "ssh_public_key_file": "lab/credentials/lab.pub",
+  "minimum_host_memory_reserve_mib": 32768,
+  "network": {
+    "name": "autonomous-rke2-isolated",
+    "bridge": "virbr-rke2",
+    "cidr": "192.168.250.0/24",
+    "forward_mode": "none",
+    "host_address": null,
+    "dhcp": false
+  },
+  "storage": {
+    "pool": "autonomous-rke2-lab",
+    "path": "/var/lib/libvirt/images/autonomous-rke2-lab",
+    "minimum_free_bytes": 322122547200
+  },
+  "image": {
+    "kind": "derived",
+    "name": "server-base.qcow2",
+    "path": "/var/lib/libvirt/images/autonomous-rke2-lab/server-base.qcow2",
+    "staged_path": "lab/artifacts/packer/release-20261016/server.qcow2",
+    "release_manifest": "lab/artifacts/packer/release-20261016/release.json",
+    "release_sha256": "78574de1f662cf06ff7832d5913104af07adf2e639a7fa3d4a71a87858286cd5",
+    "profile": "server",
+    "firewalld": "disabled",
+    "keyring_path": "lab/credentials/artifact-signing/public.gpg",
+    "signing_fingerprint": "F8BE2082B8EF04D441172C055F59BDC3D0E1B573",
+    "sha256": "2a44fa915e549f63f112bbe1cd4990d480efaa93db7bc791276fcb2d0adc0a0f",
+    "max_size_bytes": 17179869184,
+    "max_virtual_size_bytes": 34359738368
+  },
+  "nodes": [
+    {
+      "name": "rke2-r9-cp01",
+      "host_id": "61785c20-9099-400b-9373-9ef64cbfc6d9",
+      "mac": "52:54:00:40:01:01",
+      "address": "192.168.250.11",
+      "role": "server",
+      "profile": "server",
+      "firewalld": "disabled",
+      "release_sha256": "78574de1f662cf06ff7832d5913104af07adf2e639a7fa3d4a71a87858286cd5",
+      "vcpus": 4,
+      "memory_mib": 8192,
+      "disk_gib": 60
+    },
+    {
+      "name": "rke2-r9-cp02",
+      "host_id": "ead4b230-8bc3-4f71-9e9a-986dd47751d9",
+      "mac": "52:54:00:40:01:02",
+      "address": "192.168.250.12",
+      "role": "server",
+      "profile": "server",
+      "firewalld": "disabled",
+      "release_sha256": "78574de1f662cf06ff7832d5913104af07adf2e639a7fa3d4a71a87858286cd5",
+      "vcpus": 4,
+      "memory_mib": 8192,
+      "disk_gib": 60
+    },
+    {
+      "name": "rke2-r9-cp03",
+      "host_id": "4ba26a69-8077-4774-be6a-5e831fb7b84b",
+      "mac": "52:54:00:40:01:03",
+      "address": "192.168.250.13",
+      "role": "server",
+      "profile": "server",
+      "firewalld": "disabled",
+      "release_sha256": "78574de1f662cf06ff7832d5913104af07adf2e639a7fa3d4a71a87858286cd5",
+      "vcpus": 4,
+      "memory_mib": 8192,
+      "disk_gib": 60
+    }
+  ]
+}

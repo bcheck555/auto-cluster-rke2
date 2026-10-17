@@ -1,6 +1,6 @@
 # RKE2 release and node operations
 
-Status: candidate selected for the initial Rocky lab; no VM install has occurred. Recheck official support matrix, security advisories, repository availability, signatures, and exact artifact versions immediately before provisioning. Never use `latest` for reproducible installs.
+Pins: Rocky 9.8 and RKE2 v1.37.1+rke2r1, using vendor-signed RPM dependency closures and matching core/Flannel archives. Image and disposable-cluster results are tracked in `docs/offline-image-results.md`. Production lab bootstrap and RHEL validation remain deferred. Never use `latest` for reproducible installs.
 
 ## Official references reviewed 2026-10-16
 
@@ -20,10 +20,10 @@ Official install guidance requires NetworkManager to ignore CNI-managed interfac
 - Record exact RKE2 release and support-matrix evidence for Rocky Linux 9 and RHEL 9.
 - Record repository URL/channel, signing key fingerprint, GPG behavior, version pin syntax, and package artifacts.
 - Confirm embedded-etcd server bootstrap/join, agent registration, server workload scheduling, configuration fields, and role transition procedure.
-- Confirm required firewalld protocol/ports from current official docs, including registration TCP 9345 and Kubernetes API TCP 6443, plus CNI/etcd requirements applicable to selected config.
+- Preserve the OS profile's active/enabled firewalld policy and RKE2 profiles' inactive/disabled policy. Verify host-side isolation. Future production networking must separately account for TCP 9345/6443 and applicable CNI/etcd traffic.
 - Confirm kernel modules/sysctl requirements for Rocky 9 and any additional EL9 package requirements.
 - Confirm etcd health/member add/remove and disaster-recovery instructions for exact release. Automatic quorum reset remains disabled.
 
 ## Rocky node checks (future lab gate)
 
-Capture actual outputs for: `cat /etc/os-release`; `getenforce`; `sestatus`; `rpm -q rke2-server rke2-agent rke2-selinux container-selinux`; `semodule -l | grep rke2`; `systemctl is-active firewalld`; `firewall-cmd --list-all`; `grep -Fx 'selinux: true' /etc/rancher/rke2/config.yaml`; and `ps -eZ | grep 'rke2 \(server\|agent\)'`. Package queries for the opposite role may report not installed; test the selected role explicitly. Validate node API Ready and etcd health separately.
+Capture OS release, SELinux Enforcing state, installed role/policy RPMs, loaded policy, firewalld active/enabled states, masked RKE2 unit states, and image/release pins. Query firewalld rules only on the active OS profile. Package queries for the opposite role may report not installed. Unjoined replacements keep RKE2 stopped; validate API Ready, system workloads, DNS, and cross-node traffic only in the explicitly authorized disposable smoke cluster. Its static service-subnet route is supplied by test metadata and adds no default route.
