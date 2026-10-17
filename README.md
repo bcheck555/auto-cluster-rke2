@@ -34,4 +34,4 @@ boot, reboot, and disposable cluster validation. OS images keep firewalld active
 RKE2 profiles keep it installed and disabled. Existing lab replacement status
 is recorded separately from candidate build status.
 
-The project Go module is pinned to Go 1.27.2. A SHA-256-checked toolchain is available in ignored `.tools/`; the host system package set was not changed. The module path `autonomous-rke2` is provisional until a remote repository namespace is established.
+The project Go module is pinned to Go 1.27.2. Install the matching official Go distribution on the host; no repository-local toolchain is required. This development host uses `/usr/local/go`, with `go` and `gofmt` available through `/usr/local/bin`. Run `make test vet fmt-check` and `go test -race ./...` from the repository root. The module path `autonomous-rke2` is provisional until a remote repository namespace is established.

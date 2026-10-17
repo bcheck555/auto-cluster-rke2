@@ -19,8 +19,7 @@ lab/credentials/
 *.raw
 *.iso
 
-# Local toolchains/build output
-.tools/
+# Build output
 bin/
 dist/
 coverage.out

@@ -18,7 +18,7 @@ Workspace: `/var/github/auto-cluster`
 | Nested virtualization | `/sys/module/kvm_intel/parameters/nested` => `Y` | Intel KVM nested virtualization is enabled on host. Do not change it. |
 | QEMU/libvirt | QEMU 8.2.2; libvirt API/library 10.0.0 | `virsh uri` is `qemu:///system`; tools are present. |
 | Cloud-init | 26.1-0ubuntu1~24.04.1; `/usr/bin/cloud-init` | Tool present on host. |
-| Go | No host Go installation; repository-local Go 1.27.2 is available at ignored `.tools/go/bin/go` | Installed and checksum-verified inside the repository; host package set unchanged. |
+| Go | Host Go 1.27.2 at `/usr/local/go`; `go` and `gofmt` exposed through `/usr/local/bin` | On 2026-10-17, owner authorized host installation. Moved the previously checksum-verified official distribution out of the repository and made it root-owned; repository-local toolchain removed. |
 
 ## Capacity and storage
 
