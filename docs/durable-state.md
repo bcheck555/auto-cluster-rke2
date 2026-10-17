@@ -20,7 +20,9 @@ SHA-256 digest of its public key, independent of OS machine-id. The persisted
 record contains the private key; returned `HostIdentity` contains only public
 material. Reads validate the key pair and ID. Never bake initialized storage
 into an image, copy it to another host, or delete it to repair corruption.
-Private-key signing and machine-id provisioning belong to later agent work.
+`Sign` proves possession without exporting the key and never regenerates a
+missing identity. The TLS signer adapter supports plain Ed25519 only. Machine-id
+provisioning remains agent/platform integration work.
 
 Journal revision zero denotes absence. Create with expected revision zero and
 record revision one; update with record revision exactly `expected + 1`.

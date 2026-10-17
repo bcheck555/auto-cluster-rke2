@@ -1,8 +1,9 @@
 # Component contracts (implementation blueprint)
 
 These Go signatures define component boundaries. Identity and journal filesystem
-implementations now exist; see [durable storage](durable-state.md). Other provider
-implementations remain pending. Keep interfaces narrow so unit tests can inject
+implementations now exist; see [durable storage](durable-state.md). Authenticated
+discovery and bootstrap authority are [implemented](bootstrap-authority.md);
+concrete fencing providers and daemons remain pending. Keep interfaces narrow so unit tests can inject
 deterministic fakes without invoking system services. Every method accepts
 context, returns typed errors, and must avoid logging secrets.
 
@@ -17,6 +18,11 @@ type HostIdentity struct {
 
 type Store interface {
     LoadOrCreate(ctx context.Context) (HostIdentity, error)
+}
+
+type Signer interface {
+    Store
+    Sign(ctx context.Context, message []byte) ([]byte, error)
 }
 ```
 
@@ -48,20 +54,31 @@ type BootstrapRequest struct {
     PublicKey []byte
     PolicyDigest string
     RequestID string
+    IssuedAt time.Time
+    Signature []byte
 }
 
 type BootstrapGrant struct {
+    AuthorityID string
     ClusterID string
     HostID string
     OperationID string
+    PublicKey []byte
+    PolicyDigest string
+    IssuedAt time.Time
     ExpiresAt time.Time
     Signature []byte
 }
 
 type JoinGrant struct {
+    AuthorityID string
     ClusterID string
     HostID string
     Role string
+    OperationID string
+    PublicKey []byte
+    PolicyDigest string
+    IssuedAt time.Time
     ExpiresAt time.Time
     Signature []byte
 }
@@ -72,9 +89,17 @@ type Authority interface {
     VerifyBootstrapGrant(ctx context.Context, grant BootstrapGrant) error
     VerifyJoinGrant(ctx context.Context, grant JoinGrant) error
 }
+
+type Consumer interface {
+    ConsumeBootstrapGrant(ctx context.Context, grant BootstrapGrant) error
+    ConsumeJoinGrant(ctx context.Context, grant JoinGrant) error
+}
 ```
 
-Authority must persist consumed bootstrap grants and cluster identity atomically; callers must handle replay as denial. Never place an RKE2 token in discovery data or grant audit output.
+Authority persists issuance and consumption with cluster identity atomically;
+callers handle replay as denial. Verification alone does not authorize execution;
+consume the exact grant through an authenticated executor first. Never place an
+RKE2 token in discovery data or grant audit output.
 
 ```go
 package fencing

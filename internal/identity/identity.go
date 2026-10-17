@@ -17,3 +17,9 @@ type HostIdentity struct {
 type Store interface {
 	LoadOrCreate(ctx context.Context) (HostIdentity, error)
 }
+
+// Signer proves possession of the persistent host key without exporting it.
+type Signer interface {
+	Store
+	Sign(ctx context.Context, message []byte) ([]byte, error)
+}

@@ -1,6 +1,9 @@
 # Discovery decision (initial design)
 
-Status: selected as an initial lab candidate, not implemented or tested on a VM.
+Status: authenticated HTTPS discovery, persistent cluster pins, static hints,
+and explicit DNS-SD SRV lookup adapters are implemented and tested locally.
+Native multicast browsing and VM/L2 validation remain pending. See
+[authority and discovery implementation](bootstrap-authority.md).
 
 ## Options considered
 
@@ -8,7 +11,7 @@ Status: selected as an initial lab candidate, not implemented or tested on a VM.
 |---|---|---|---|
 | mDNS/DNS-SD | Simple on shared isolated L2; no preconfigured DNS; service/endpoint hints can be scoped | Multicast may be filtered; spoofable; collisions and partitions; does not establish trust | Use only to find candidate endpoints in the lab, not to authorize a cluster or convey secrets. |
 | Custom UDP broadcast | Small implementation; fast peer announcements | Broadcast filtering, packet loss/spoofing, protocol maintenance, easy accidental secret disclosure | Do not implement initially; no security advantage over mDNS. |
-| DNS/SRV records | Mature, stable service discovery | Requires trusted DNS and records before cluster exists; creates dependency/authority problem | Possible future production provider when DNS is independently available and authenticated. |
+| DNS/SRV records | Mature, stable service discovery | Requires DNS and records before cluster exists; spoofed records can deny discovery | Explicit SRV hint provider implemented; TLS, signatures, and persistent pins establish authority. |
 
 ## Protocol boundary
 

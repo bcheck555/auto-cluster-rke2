@@ -24,11 +24,11 @@
 - Phase 1 replacement is complete on no-forwarding L2 with no bridge IP or DHCP, static addresses `192.168.250.11`–`.13`, and per-NIC IPv6 drops. Signed RKE2 server images are installed, masked, and unjoined; firewalld is inactive/disabled and SELinux Enforcing. Current evidence and rollback are in `docs/offline-image-results.md`.
 - `ROTA=1` on the PERC H330-backed disks does not prove whether the actual media is SSD or HDD. What are the physical drive type, RAID virtual-disk/cache policy, and expected IOPS? Do not claim SSD-backed VM disks until known.
 - Existing pool `ad-hyperv-lab` reports 701.52 GiB free while `df` on `/var` reports 617 GiB free. Reconcile pool vs filesystem accounting and retain a host reserve before estimating safe disk allocation.
-- What external trust anchor will authorize joining hosts in the lab, and how is its private key protected/rotated? A host-local authority would require a separate, explicitly filtered communication path; the chosen VM network has no host L3 address.
+- A local enrolled-host authority, pinned signing-key/policy verifier, and mutual-TLS grant APIs are implemented; see [authority design and tests](bootstrap-authority.md). Lab signing-key/client-CA provisioning, private-key rotation/revocation, and the explicitly filtered communication path remain deployment decisions; the chosen VM network has no host L3 address.
 - What exact stable registration endpoint will remain reachable through a server replacement? Initial test network currently has no host route/service access; decide a filtered authority path before cluster bootstrap.
 - What project license and repository remote/module namespace should be used? No LICENSE has been added pending owner choice.
 - Rocky and RKE2 artifact signatures/digests are verified during staging. Publication and replacement require the image and disposable-cluster gates recorded in `docs/offline-image-results.md`; future version updates need a new verified input generation.
-- Offline artifacts, three-profile validation, disposable cluster/reboot testing, and sequential replacement passed. Production cluster bootstrap still needs an authority design and stable registration endpoint. Pod NetworkPolicy enforcement and RHEL validation remain deferred.
+- Offline artifacts, three-profile validation, disposable cluster/reboot testing, and sequential replacement passed. Production cluster bootstrap still needs authority deployment/trust provisioning and a stable registration endpoint. Pod NetworkPolicy enforcement and RHEL validation remain deferred.
 
 ## Approval gates
 

@@ -12,22 +12,41 @@ type BootstrapRequest struct {
 	PublicKey    []byte
 	PolicyDigest string
 	RequestID    string
+	IssuedAt     time.Time
+	Signature    []byte
 }
 
 type BootstrapGrant struct {
-	ClusterID   string
-	HostID      string
-	OperationID string
-	ExpiresAt   time.Time
-	Signature   []byte
+	AuthorityID  string
+	ClusterID    string
+	HostID       string
+	OperationID  string
+	PublicKey    []byte
+	PolicyDigest string
+	IssuedAt     time.Time
+	ExpiresAt    time.Time
+	Signature    []byte
 }
 
 type JoinGrant struct {
-	ClusterID string
-	HostID    string
-	Role      string
-	ExpiresAt time.Time
-	Signature []byte
+	AuthorityID  string
+	ClusterID    string
+	HostID       string
+	Role         string
+	OperationID  string
+	PublicKey    []byte
+	PolicyDigest string
+	IssuedAt     time.Time
+	ExpiresAt    time.Time
+	Signature    []byte
+}
+
+// Consumer is the atomic, single-use execution gate. Signature verification
+// alone never authorizes executing a bootstrap or join. Callers must be trusted
+// executors authenticated as the grant's host; these methods are local APIs.
+type Consumer interface {
+	ConsumeBootstrapGrant(context.Context, BootstrapGrant) error
+	ConsumeJoinGrant(context.Context, JoinGrant) error
 }
 
 // Authority is the pre-cluster trust root. Implementations must persist
