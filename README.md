@@ -16,6 +16,8 @@ See [docs/environment-assessment.md](docs/environment-assessment.md). Assessment
 
 ## Design
 
+See the [implementation roadmap](docs/roadmap.md) for current scope and remaining acceptance gates.
+
 See [docs/architecture.md](docs/architecture.md), [docs/trust-and-threat-model.md](docs/trust-and-threat-model.md), and [docs/state-machine.md](docs/state-machine.md). The system must never form a cluster merely because peers are unreachable; first-cluster creation requires explicit trusted bootstrap authority. Quorum loss or unconfirmed fencing halts destructive recovery.
 
 ## Development
