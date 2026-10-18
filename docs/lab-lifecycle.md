@@ -16,7 +16,7 @@ No guest Internet connection is required during deployment.
   `/usr/share/OVMF/OVMF_VARS_4M.fd`.
 - Have a published signed universal release, its referenced artifacts, and the
   repository's artifact trust files. The template points to the locally built
-  `lab/artifacts/packer/release-universal-20261017/release.json`; a fresh checkout
+  `lab/artifacts/packer/release-scaling-20261018/release.json`; a fresh checkout
   does not include ignored artifacts. See the [image workflow](offline-images.md)
   if they are missing. Do not create an unsigned replacement manifest.
 - Reserve an unused private IPv4 subnet outside pod CIDR `10.42.0.0/16` and
@@ -74,7 +74,7 @@ reconnect first. The scripts do not change shell options.
 
    Create verifies the signed release, prepares unique disks and local seeds,
    boots the first new node alone, checks health, then starts additional nodes
-   sequentially. The first three become servers; later nodes become workers.
+   sequentially. Controls fill `control_nodes` (default three); others become workers.
    Names remain independent of roles.
 
 ### Verify the result
@@ -86,8 +86,9 @@ Successful create prints node/pod status and saves a kubeconfig. With a host
 sudo kubectl --kubeconfig /var/lib/libvirt/images/autonomous-rke2-dev/admin.yaml get nodes -o wide
 ```
 
-Expect the configured number of `Ready` nodes named `dev-node01`, `dev-node02`,
-and so on. One node means one server; three nodes means three servers; four nodes
+Expect the configured number of `Ready` Kubernetes nodes. VM names are
+`dev-node01`, `dev-node02`, and so on; Kubernetes names use durable host identities.
+At the default control target, one node means one server; three nodes means three servers; four nodes
 adds one worker. Servers can run workloads.
 
 Inspect the example's first node with its generated operator key:
@@ -115,8 +116,10 @@ before health waits so an existing etcd quorum can recover. VM autostart is
 disabled. First-node-alone applies to new formation; restarting an existing
 three-server cluster requires its existing voters.
 
-Changing release, node count, VM resources, or network requires destroy/create.
-Editing `nodes` does not perform in-place scaling. Missing initialized disk,
+Changing release, VM resources, or network requires destroy/create. For a
+scaling-capable release, editing `nodes` or `control_nodes` and rerunning create
+performs [resumable reconciliation](scaling.md). Older images need one rebuild.
+Missing initialized disk,
 NVRAM, or seed files stop resume rather than generating replacement identities.
 See [troubleshooting](troubleshooting.md).
 

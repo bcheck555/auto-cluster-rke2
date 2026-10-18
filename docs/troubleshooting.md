@@ -88,6 +88,17 @@ For missing data, changed address/interface, fingerprint, or conflicting IDs,
 restore original state/settings. Do not delete journals or reset etcd to force
 discovery. Automated quorum reset is not implemented.
 
+## Node-count changes request a rebuild or stop at drain
+
+**Causes:** an older image lacks scaling capability, or workload protection blocks
+retirement on a new image.
+
+**Resolution:** older images need one rebuild with a scaling-capable release;
+editing node count cannot upgrade their agents. On new images inspect the
+reported drain blocker, capacity, and quorum, resolve it, then rerun create.
+Changing YAML again does not discard an interrupted operation. See
+[scaling recovery and explicit force behavior](scaling.md#interrupted-or-blocked-changes).
+
 ## Destroy refuses leftovers
 
 **Causes:** unknown resource consumer; same-named VM outside owned storage;

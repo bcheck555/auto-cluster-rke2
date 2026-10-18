@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,6 +20,7 @@ func run() int {
 	once := flag.Bool("once", false, "perform one bounded convergence attempt")
 	check := flag.Bool("check", false, "validate common configuration without creating state")
 	health := flag.Bool("health", false, "independently verify local cluster health and emit public evidence")
+	manage := flag.Bool("manage", false, "root-only membership operation: bounded JSON on stdin; public status on stdout")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		return 2
@@ -33,6 +35,32 @@ func run() int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if *manage {
+		if os.Geteuid() != 0 || *health || *once || *check {
+			return 2
+		}
+		var request formation.ManagementRequest
+		decoder := json.NewDecoder(io.LimitReader(os.Stdin, 16385))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&request) != nil {
+			return 2
+		}
+		var extra any
+		if decoder.Decode(&extra) != io.EOF {
+			return 2
+		}
+		attempt, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		status, err := formation.Manage(attempt, s, request)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "host-agent: membership operation blocked:", err)
+			return 1
+		}
+		if json.NewEncoder(os.Stdout).Encode(status) != nil {
+			return 1
+		}
+		return 0
+	}
 	if *health {
 		attempt, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()

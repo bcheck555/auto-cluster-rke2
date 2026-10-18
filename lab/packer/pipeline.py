@@ -95,6 +95,11 @@ def build(input_path, output):
         raise ImageError('validation workload must be digest pinned')
     if set(manifest.get('packages', {})) != set(PROFILES):
         raise ImageError('input RPM profile closures incomplete')
+    if manifest.get('capabilities'):
+        capability_path = 'node/capabilities.json'
+        if (capability_path not in manifest['files']
+                or json.loads((input_path.parent / capability_path).read_text()).get('capabilities') != manifest['capabilities']):
+            raise ImageError('input capabilities are not bound to the signed node payload')
     output = Path(output).resolve()
     if output.exists():
         raise ImageError("build output already exists; refusing overwrite")
@@ -153,7 +158,8 @@ def build(input_path, output):
         shutil.rmtree(work)
         files = inventory(output)
         candidate = {"schema": 1, "kind": "candidate", "versions": VERSIONS, "profiles": profiles,
-                     "input_sha256": digest(input_path), "files": files, "offline_build": True}
+                     "input_sha256": digest(input_path), "files": files, "offline_build": True,
+                     "capabilities": manifest.get('capabilities', [])}
         write_json(output / "candidate.json", candidate)
         sign(output / "candidate.json")
         print("signed candidate: " + str(output / "candidate.json"), flush=True)
@@ -168,6 +174,20 @@ def build(input_path, output):
 def test(input_path, output):
     from .runtime import test_candidate
     test_candidate(Path(input_path).resolve(), Path(output).resolve())
+
+
+def validate_scaling_evidence(candidate, report):
+    if 'membership-reconciliation-v1' not in candidate.get('capabilities', []):
+        return
+    evidence = report.get('scaling', {})
+    required = {(3, 3), (5, 5), (7, 7), (8, 7), (5, 3), (2, 3), (1, 3)}
+    covered = {(case.get('nodes'), case.get('control_nodes')) for case in evidence.get('cases', [])}
+    if (evidence.get('passed') is not True
+            or evidence.get('same_image_sha256') != candidate['profiles']['node']['sha256']
+            or not required.issubset(covered)
+            or any(evidence.get(key) is not True for key in
+                   ('blocked_drain_preserved_vm', 'forced_drain_validated', 'source_inputs_preserved'))):
+        raise ImageError('scaling-capable release requires complete signed scaling acceptance for this disk')
 
 
 def publish(input_path, output):
@@ -192,6 +212,7 @@ def publish(input_path, output):
         raise ImageError("successful validation does not bind this candidate")
     if report.get('formation', {}).get('passed') is not True or report['formation'].get('same_image_sha256') != candidate['profiles']['node']['sha256']:
         raise ImageError('universal node formation validation missing or for another image')
+    validate_scaling_evidence(candidate, report)
     output = Path(output).resolve()
     if output.exists():
         raise ImageError("release destination already exists")
@@ -203,7 +224,8 @@ def publish(input_path, output):
     shutil.copyfile(test_path, output / "validation.json")
     release = {"schema": 1, "kind": "release", "versions": VERSIONS, "profiles": candidate["profiles"],
                "input_sha256": candidate["input_sha256"], "candidate_sha256": digest(input_path),
-               "validation_sha256": digest(test_path), "files": inventory(output)}
+               "validation_sha256": digest(test_path), "files": inventory(output),
+               "capabilities": candidate.get('capabilities', [])}
     release['host_tools'] = {name: run([name, '--version']).splitlines()[0]
                              for name in ('qemu-system-x86_64', 'qemu-img', 'virsh', 'gpgv')}
     release['firmware_sha256'] = {name: digest(Path('/usr/share/OVMF') / name)
@@ -241,7 +263,7 @@ def export(input_path, output):
     shutil.copyfile(str(input_path) + '.sig', output / 'source-release.json.sig')
     manifest = {'schema': 1, 'kind': 'raw-node', 'source_release_sha256': digest(input_path),
                 'source_node_sha256': pin['sha256'], 'virtual_size': info['virtual-size'],
-                'files': inventory(output)}
+                'files': inventory(output), 'capabilities': release.get('capabilities', [])}
     write_json(output / 'export.json', manifest)
     sign(output / 'export.json')
     print('signed universal raw disk: ' + str(output / 'export.json'), flush=True)

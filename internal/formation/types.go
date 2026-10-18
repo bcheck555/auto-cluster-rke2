@@ -71,7 +71,7 @@ func (s Settings) Policy() string {
 		Servers                     int
 		Version, Core, Flannel, DNS string
 		Formation                   string
-	}{3, hostagent.RKE2Version, s.CoreImageSHA256, s.FlannelImageSHA256, s.CoreDNSSHA256, "native-supervisor-v1"})
+	}{7, hostagent.RKE2Version, s.CoreImageSHA256, s.FlannelImageSHA256, s.CoreDNSSHA256, "membership-reconciliation-v1"})
 }
 
 func digest(v any) string {
@@ -146,6 +146,7 @@ type Member struct {
 	Complete     bool
 	NodeUID      string
 	EtcdMemberID string
+	Retiring     bool
 }
 
 type Credentials struct {

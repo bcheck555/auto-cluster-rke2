@@ -20,6 +20,7 @@ class ClusterConfig:
     release: Path
     nodes: int
     timeout: int
+    control_nodes: int = 3
 
     @property
     def env_path(self):
@@ -79,7 +80,7 @@ def load_config(path, *, check_siblings=True):
     if path.suffix not in ('.yaml', '.yml'):
         raise ImageError('cluster config filename must end in .yaml or .yml')
     data = mapping(read_yaml(path), path.name,
-                   ('schema', 'cluster', 'hostname_prefix', 'release', 'nodes',
+                   ('schema', 'cluster', 'hostname_prefix', 'release', 'nodes', 'control_nodes',
                     'health_timeout', 'network', 'vm'),
                    ('schema', 'cluster', 'release', 'nodes', 'network'))
     if type(data['schema']) is not int or data['schema'] != 1:
@@ -100,10 +101,13 @@ def load_config(path, *, check_siblings=True):
     settings = Settings(**options)
     settings.select_subnet({'networks': {}}, [], [], count=data['nodes'])
     timeout = integer(data.get('health_timeout', 1200), 'health_timeout', 1, 86400)
+    control_nodes = data.get('control_nodes', 3)
+    if type(control_nodes) is not int or control_nodes not in (3, 5, 7):
+        raise ImageError('control_nodes must be 3, 5, or 7')
     if not isinstance(data['release'], str) or not data['release'].strip():
         raise ImageError('release must be a nonempty manifest path')
     release = (path.parent / data['release']).resolve()
-    config = ClusterConfig(path, options, release, data['nodes'], timeout)
+    config = ClusterConfig(path, options, release, data['nodes'], timeout, control_nodes)
     for source in (config.path, config.env_path):
         if any(parent.parent == Path('/var/lib/libvirt/images')
                and parent.name.startswith('autonomous-rke2-') for parent in source.parents):

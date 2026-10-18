@@ -139,7 +139,7 @@ func (k KubeBackend) load(ctx context.Context) (Catalog, configMap, int, error) 
 			pending++
 		}
 	}
-	if servers < 1 || servers > 3 || pending > 1 {
+	if servers < 1 || servers > 7 || pending > 1 || !controlTargetValid(c.controlTarget()) {
 		return c, cm, status, ErrConflict
 	}
 	return c, cm, status, nil
@@ -196,7 +196,7 @@ func (k KubeBackend) change(ctx context.Context, request Member, complete bool) 
 		if complete {
 			var ok bool
 			record, ok = c.Members[request.ID]
-			if !ok || !sameMember(record, request) {
+			if !ok || !sameMember(record, request) || record.Retiring {
 				return Member{}, ErrConflict
 			}
 			evidence, err := k.observed(ctx, record)
@@ -324,7 +324,7 @@ func (k KubeBackend) observed(ctx context.Context, m Member) (Member, error) {
 				}
 			}
 		}
-		if found != 1 || m.EtcdMemberID == "" || voters > 3 {
+		if found != 1 || m.EtcdMemberID == "" || voters > 7 {
 			return Member{}, ErrWaiting
 		}
 	}
@@ -340,7 +340,7 @@ func (k KubeBackend) Credentials(ctx context.Context, request Member) (Credentia
 		return Credentials{}, err
 	}
 	m, ok := c.Members[request.ID]
-	if !ok || !sameMember(m, request) {
+	if !ok || !sameMember(m, request) || m.Retiring {
 		return Credentials{}, ErrConflict
 	}
 	result := Credentials{Member: m}

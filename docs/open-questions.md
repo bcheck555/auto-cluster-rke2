@@ -1,7 +1,7 @@
 # Remaining validation and design work
 
-- Repeat the four-clone acceptance gate for each new candidate. The recorded
-  universal release has passed it; see [validation evidence](universal-image-results.md).
+- Repeat formation and scaling acceptance gates for each new candidate. The
+  scaling release has passed them; see [validation evidence](scaling-image-results.md).
   Local unit tests alone do not validate guest SELinux labeling, multicast
   switches, coinstalled RPM behavior, or RKE2 boot ordering end to end.
 - Validate raw-image boot and drivers on physical hosts. Disk export exists;
@@ -16,10 +16,11 @@
 - Validate larger deployments and discovery bounds. Current probes accept at
   most 64 peers; the 1,024-member catalog limit is a data-structure ceiling,
   not evidence of deployment testing at that size. Recorded runtime acceptance
-  covers four nodes.
+  covers eight nodes, including seven etcd voters.
 - Define fencing-backed member replacement and disaster recovery separately.
-  No quorum reset, member removal or promotion is performed automatically.
+  Managed libvirt resizing now retires members and replaces roles explicitly;
+  no failure-driven replacement, quorum reset, or in-place promotion is automatic.
 
 Settled: one universal image, node-resident coordination, first node booted
-alone, common site enrollment secret, first three total nodes as servers,
+alone, common site enrollment secret, configurable control target (default three),
 subsequent workers, no external runtime authority or load balancer.

@@ -20,6 +20,9 @@ type Health struct {
 // CheckHealth independently observes Kubernetes, the immutable cluster marker,
 // and (for servers) local etcd. A cached Healthy journal alone is insufficient.
 func CheckHealth(ctx context.Context, s Settings) (Health, error) {
+	if err := notRetired(s); err != nil {
+		return Health{}, err
+	}
 	if s.Validate() != nil {
 		return Health{}, ErrInvalid
 	}

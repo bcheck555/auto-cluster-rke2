@@ -323,7 +323,7 @@ func (h *HealthChecker) etcd(ctx context.Context, p Plan) (Evidence, error) {
 			}
 		}
 	}
-	if found != 1 || evidence.VotingServers < p.MinVotingServers || evidence.VotingServers > 3 {
+	if found != 1 || evidence.VotingServers < p.MinVotingServers || evidence.VotingServers > 7 {
 		return evidence, ErrWaiting
 	}
 	evidence.EtcdClusterID = local.Header.ClusterID

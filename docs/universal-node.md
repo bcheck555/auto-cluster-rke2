@@ -2,7 +2,8 @@
 
 Use the same sealed image for every VM or physical host. Supply common enrollment
 trust and unique machine/network identities, then boot the first new node alone.
-The next two nodes join as servers; later nodes become workers. No per-node role,
+Controls fill the default target of three; later nodes become workers. Managed
+libvirt deployments can select a target of five or seven. No per-node role,
 cluster UUID, seed server address, or grant is entered.
 
 For the supported local KVM automation, use [lab lifecycle](lab-lifecycle.md).
@@ -80,7 +81,8 @@ and package/image downloads are not required at runtime.
 5. Boot additional prepared nodes. Reservations serialize joins; no manual token
    or role copying is needed. Servers enroll through discovered healthy servers;
    workers receive only worker credentials and limited read-only health access.
-   Check each node's health and expected cluster membership.
+   Check each node's health and expected cluster membership. For managed target
+   changes and retirement, follow [scaling](scaling.md).
 
 ### Verify membership
 
@@ -131,7 +133,7 @@ quorum until that node returns. Do not erase journals or reset etcd to force a j
 
 Reader and enrollment TLS certificates renew under the same host keys. Site-key
 and CA rotation, abandoned reservation reconciliation, replacement, and upgrades
-need future procedures. Automatic promotion, removal, quorum reset, runtime disk
+need future procedures. Unattended promotion/removal, quorum reset, runtime disk
 cleanup, and fencing are not implemented. Lab teardown is a separate host-side
 operation.
 

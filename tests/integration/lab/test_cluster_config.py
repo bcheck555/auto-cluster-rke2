@@ -31,6 +31,16 @@ def root_owner():
 
 
 class ClusterConfigTests(unittest.TestCase):
+    def test_control_targets_default_and_strict_values(self):
+        self.assertEqual(config.load_config(self.path).control_nodes, 3)
+        for value in (3, 5, 7):
+            self.path.write_text(json.dumps({**document(), 'control_nodes': value}))
+            self.assertEqual(config.load_config(self.path).control_nodes, value)
+        for value in (True, 1, 2, 4, 6, 8, '3', None):
+            self.path.write_text(json.dumps({**document(), 'control_nodes': value}))
+            with self.assertRaisesRegex(ImageError, 'control_nodes'):
+                config.load_config(self.path)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

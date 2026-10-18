@@ -11,14 +11,17 @@ distinguish an empty network from a network partition.
 
 ## Project status
 
-The universal image passed four-VM formation, simultaneous reboot, offline DNS,
-and cross-node networking checks. Physical disk export is verified; physical
-hardware boot validation remains pending. See [validation evidence](docs/universal-image-results.md).
+The scaling image passed formation, simultaneous reboot, offline DNS, cross-node
+networking, and resizing through seven controls plus a worker. Physical disk
+export is verified; physical hardware boot validation remains pending.
+See [scaling validation evidence](docs/scaling-image-results.md).
 
-The first three admitted nodes become servers; later nodes become workers.
+The default control-node target is three; `control_nodes` can select three,
+five, or seven. Actual controls are limited by total `nodes`; the remainder are workers.
 One- and two-server clusters are possible, but provide no tolerance for a
-server failure. Automatic promotion, member replacement/removal, upgrades,
-fencing, and quorum recovery are not implemented.
+server failure. Scaling-capable images support operator-requested resizing and
+role replacement through create. Unattended failure recovery, in-place role
+promotion, upgrades, and lost-quorum recovery are not implemented.
 
 Current image pins: Rocky Linux 9.8 amd64, RKE2 v1.37.1+rke2r1, Flannel VXLAN,
 and SELinux Enforcing. Node images have firewalld installed and disabled.
@@ -70,6 +73,22 @@ sudo python3 lab/libvirt/create.py --config clusters/dev.yaml
 Rebuild reuses their values, including the enrollment secret. Restore application
 data separately. See [destroy and rebuild](docs/lab-lifecycle.md#destroy-and-rebuild-a-cluster)
 for partial deployments and changed configurations.
+
+## Resize a cluster
+
+For a cluster created from a scaling-capable image, edit `nodes` and optionally
+`control_nodes` (`3`, `5`, or `7`) in its YAML, then rerun:
+
+```bash
+sudo python3 lab/libvirt/create.py --config clusters/dev.yaml --plan
+sudo python3 lab/libvirt/create.py --config clusters/dev.yaml
+```
+
+Create adds missing nodes, drains/removes excess workers before controls, and
+reconciles role changes with fresh replacements. **Removed/replaced nodes lose
+their local disks.** Blocked drains stop by default. Low/even control counts warn
+but are allowed; actual lost quorum blocks changes. Older images require one
+rebuild. See [scaling behavior and recovery](docs/scaling.md).
 
 ## Documentation
 

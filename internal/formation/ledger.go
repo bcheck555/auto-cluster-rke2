@@ -9,10 +9,31 @@ import (
 )
 
 type Catalog struct {
-	ClusterID string
-	Policy    string
-	Members   map[string]Member
+	ClusterID    string
+	Policy       string
+	Members      map[string]Member
+	ControlNodes int
+	Retired      map[string]Member
+	Operation    *MembershipOperation
 }
+
+// MembershipOperation is a durable, non-expiring lock. Only its owner may
+// authorize an admission or retirement; an interrupted owner resumes its ID.
+type MembershipOperation struct {
+	ID           string
+	Nodes        int
+	ControlNodes int
+	Address      string
+}
+
+func (c Catalog) controlTarget() int {
+	if c.ControlNodes == 0 {
+		return 3
+	}
+	return c.ControlNodes
+}
+
+func controlTargetValid(n int) bool { return n == 3 || n == 5 || n == 7 }
 
 type Backend interface {
 	Init(context.Context, Member) error
@@ -38,14 +59,26 @@ func (c *Catalog) Reserve(request Member) (Member, error) {
 	if !validMember(request) || c.Members == nil || len(c.Members) > 1024 {
 		return Member{}, ErrInvalid
 	}
+	if _, retired := c.Retired[request.ID]; retired {
+		return Member{}, ErrConflict
+	}
+	if !controlTargetValid(c.controlTarget()) {
+		return Member{}, ErrInvalid
+	}
 	if existing, ok := c.Members[request.ID]; ok {
-		if !sameMember(existing, request) {
+		if !sameMember(existing, request) || existing.Retiring {
 			return Member{}, ErrConflict
 		}
 		return existing, nil
 	}
+	if c.Operation != nil && c.Operation.Address != request.Address {
+		return Member{}, ErrWaiting
+	}
 	servers := 0
 	for _, member := range c.Members {
+		if member.Retiring {
+			return Member{}, ErrWaiting
+		}
 		if member.Role == "server" {
 			servers++
 		}
@@ -56,11 +89,11 @@ func (c *Catalog) Reserve(request Member) (Member, error) {
 			return Member{}, ErrConflict
 		}
 	}
-	if len(c.Members) >= 1024 || servers > 3 {
+	if len(c.Members) >= 1024 || servers > 7 {
 		return Member{}, ErrConflict
 	}
 	request.Role = "agent"
-	if servers < 3 {
+	if servers < c.controlTarget() {
 		request.Role = "server"
 	}
 	request.Complete = false

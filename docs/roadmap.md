@@ -15,6 +15,8 @@ Implemented universal-image path:
   subnet/collision checks, configurable node counts, and public YAML plus
   preserved private `.env` inputs. See [lab lifecycle](lab-lifecycle.md) and
   [configuration reference](cluster-config.md).
+- Journaled node-count and control-target reconciliation for new scaling-capable
+  images, explicit drain overrides, serialized etcd retirement, and role replacement.
 
 The fresh universal image passed offline builds and four-clone libvirt
 acceptance: first-alone bootstrap, automatic server/server/worker joins,

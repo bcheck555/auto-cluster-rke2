@@ -1,5 +1,6 @@
 """Universal image contracts; no hypervisor or network mutations."""
 import json
+import base64
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,89 @@ from lab.packer import artifacts, guest, pipeline, runtime, stage
 
 
 class UniversalImageTests(unittest.TestCase):
+    def test_validation_never_overwrites_existing_filter_or_bridge(self):
+        from lab.packer import validation_network
+        for collision in ('filter', 'bridge'):
+            with self.subTest(collision=collision), tempfile.TemporaryDirectory() as directory:
+                calls = []
+                def virsh(*args):
+                    calls.append(args)
+                    if args[0] == 'nwfilter-list' and collision == 'filter':
+                        return 'uuid autonomous-rke2-image-123456789012'
+                    return ''
+                fake = SimpleNamespace(POOL=Path('/old-pool'), NETWORK='old-net', FILTER='old-filter',
+                                       BRIDGE='old-bridge', OPERATOR_KEY=Path('/old-key.pub'), virsh=virsh,
+                                       run=lambda args: json.dumps([{'ifname': 'br-img-12345678'}] if collision == 'bridge' else []))
+                real_path = Path
+                def path(value):
+                    return real_path(directory) if value == '/var/lib/libvirt/images' else real_path(value)
+                with patch.object(validation_network, 'Path', side_effect=path), \
+                        patch.object(validation_network.os, 'geteuid', return_value=0), \
+                        patch.object(validation_network.uuid, 'uuid4', return_value=SimpleNamespace(hex='12345678901234567890')), \
+                        self.assertRaisesRegex(artifacts.ImageError, 'collision'):
+                    with validation_network.isolated_validation(fake, directory):
+                        self.fail('unexpected resource adoption')
+                self.assertFalse(any(c[0].endswith(('define', 'undefine', 'destroy')) for c in calls))
+                self.assertEqual(fake.NETWORK, 'old-net')
+
+    def test_cached_formation_rechecks_stable_ids_roles_and_disk_binding(self):
+        candidate = {'input_sha256': 'input', 'profiles': {'node': {'sha256': 'disk'}}}
+        nodes = {}
+        for i in range(4):
+            identity = {'ClusterID': 'cluster', 'HostID': f'host-{i}',
+                        'Role': 'server' if i < 3 else 'agent',
+                        'Evidence': {'NodeUID': f'uid-{i}', 'EtcdClusterID': 'etcd',
+                                     'EtcdMemberID': str(i), 'VotingServers': 3}}
+            report = {'host_id': f'seed-{i}', 'smoke': {'formation': identity,
+                       'nodes_ready': 4, 'cross_node_service': True, 'cross_node_pod': True}}
+            nodes[f'image-test-formation-{i + 1}'] = {'boot': report, 'reboot': json.loads(json.dumps(report))}
+        formation = {'passed': True, 'same_image_sha256': 'disk', 'nodes': nodes}
+        with patch.object(runtime, 'validate_report') as validate:
+            runtime.validate_cached_formation(candidate, formation, 'operator')
+            self.assertEqual(validate.call_count, 8)
+            nodes['image-test-formation-1']['reboot']['smoke']['formation']['Evidence']['NodeUID'] = 'replacement'
+            with self.assertRaisesRegex(artifacts.ImageError, 'identities or roles'):
+                runtime.validate_cached_formation(candidate, formation, 'operator')
+            formation['same_image_sha256'] = 'other'
+            with self.assertRaises(artifacts.ImageError):
+                runtime.validate_cached_formation(candidate, formation, 'operator')
+
+    def test_publication_requires_complete_scaling_evidence_for_exact_disk(self):
+        candidate = {'capabilities': ['membership-reconciliation-v1'], 'profiles': {'node': {'sha256': 'a' * 64}}}
+        evidence = {'passed': True, 'same_image_sha256': 'a' * 64,
+                    'cases': [{'nodes': n, 'control_nodes': c} for n, c in
+                              ((3, 3), (5, 5), (7, 7), (8, 7), (5, 3), (2, 3), (1, 3))],
+                    'blocked_drain_preserved_vm': True, 'forced_drain_validated': True,
+                    'source_inputs_preserved': True}
+        pipeline.validate_scaling_evidence(candidate, {'scaling': evidence})
+        for key in ('passed', 'same_image_sha256', 'cases', 'blocked_drain_preserved_vm',
+                    'forced_drain_validated', 'source_inputs_preserved'):
+            incomplete = {k: v for k, v in evidence.items() if k != key}
+            with self.subTest(key=key), self.assertRaisesRegex(artifacts.ImageError, 'complete signed scaling'):
+                pipeline.validate_scaling_evidence(candidate, {'scaling': incomplete})
+        pipeline.validate_scaling_evidence({'capabilities': []}, {})
+
+    def test_kernel_console_interleaving_does_not_corrupt_report_parser(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'serial.log'
+            report = {'boot_id': 'real-boot', 'operator_password': 'LK', 'payload': 'x' * 2000}
+            encoded = base64.b64encode(json.dumps(report).encode())
+            path.write_bytes(b'[ 150.000001] console prefix IMAGE_REPORT=' + encoded[:101] +
+                             b'[ 150.000002] cni0 entered forwarding state\r\n' + encoded[101:] +
+                             b'\r\n[ 151.000003] unrelated kernel message\r\n')
+            self.assertEqual(runtime.reports({'serial': str(path)}), [report])
+
+    def test_waiting_for_slow_boot_does_not_change_guest_password(self):
+        from lab.packer import console
+        spec = {'name': 'image-test-owned', 'diagnostic_path': '/unused', 'serial': '/unused'}
+        report = {'boot_id': 'new-boot'}
+        with patch.object(runtime, 'require_owner'), \
+             patch.object(runtime, 'reports', side_effect=[[], [], [report]]), \
+             patch.object(runtime.time, 'monotonic', side_effect=[0, 1, 151, 152]), \
+             patch.object(runtime.time, 'sleep'), patch.object(console, 'diagnose') as diagnose:
+            self.assertEqual(runtime.wait_report(spec), report)
+            diagnose.assert_not_called()
+
     def test_validation_storage_fallback_reserves_full_ram_and_guest_growth(self):
         candidate = {'profiles': {'os': {'size': artifacts.GIB}, 'node': {'size': 2 * artifacts.GIB}}}
         with patch.object(runtime, 'preflight', side_effect=[artifacts.ImageError('insufficient disk after reserve'), {}]) as check:
@@ -38,11 +122,23 @@ class UniversalImageTests(unittest.TestCase):
             names = set(artifacts.inventory(root))
             self.assertIn('node/host-agent', names)
             self.assertIn('node/host-agent.service', names)
+            self.assertEqual(json.loads((root / 'node/capabilities.json').read_text()),
+                             {'capabilities': ['membership-reconciliation-v1']})
             self.assertIn('node/source/internal/formation/node.go', names)
             self.assertFalse(any('credentials/' in name or 'enrollment-secret' in name for name in names))
             unit = (root / 'node/host-agent.service').read_text()
             self.assertIn('ConditionPathExists=/etc/autonomous-rke2/enrollment-secret', unit)
             self.assertIn('/etc/autonomous-rke2/node.json', unit)
+
+    def test_recipe_includes_only_public_reconciliation_tools(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stage.stage_recipe(root)
+            names = set(artifacts.inventory(root))
+            self.assertIn('recipe/lab/libvirt/scaling.py', names)
+            self.assertIn('recipe/lab/libvirt/ipv4-only.xml', names)
+            self.assertIn('recipe/lab/packer/validation_network.py', names)
+            self.assertFalse(any('credentials/' in name or name.endswith('.env') for name in names))
 
     def test_seal_refuses_deployment_secret_and_initialized_identity(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -185,17 +185,13 @@ createrepo_c /out/rpms
     run(["docker", "save", "--output", destination / "runtime/validation-workload.tar", "busybox:1.37.0"])
     workload_pin = workload_reference(destination / 'runtime/validation-workload.tar')
     # Copy only explicitly selected public build inputs, never credentials/state.
-    recipe = destination / "recipe/lab/packer"
-    recipe.mkdir(parents=True)
-    for path in (ROOT / "lab/packer").glob("*"):
-        if path.suffix in {".py", ".hcl"}:
-            shutil.copyfile(path, recipe / path.name)
+    stage_recipe(destination)
     stage_node(destination)
     manifest = {"schema": 1, "kind": "input", "versions": VERSIONS, "vendor_fingerprints": keys,
         "source_image_sha256": config["image"]["sha256"], "staging_container": image_pin,
         "packages": json.loads((destination / "packages.json").read_text()),
         "validation_image": workload_pin, "validation_image_digests": workload["RepoDigests"],
-        "files": inventory(destination)}
+        "capabilities": ["membership-reconciliation-v1"], "files": inventory(destination)}
     write_json(destination / "input.json", manifest)
     sign(destination / "input.json")
     print("signed input lock: " + str(destination / "input.json"), flush=True)
@@ -218,11 +214,7 @@ def rebind_recipe(source, destination):
             os.link(source.parent / name, target)
         except OSError:
             shutil.copyfile(source.parent / name, target)
-    recipe = destination / "recipe/lab/packer"
-    recipe.mkdir(parents=True)
-    for path in (ROOT / "lab/packer").glob("*"):
-        if path.suffix in {".py", ".hcl"}:
-            shutil.copyfile(path, recipe / path.name)
+    stage_recipe(destination)
     packages = manifest['packages']
     if 'node' not in packages:
         packages = {'os': packages['os'], 'node': packages['server'] + packages['agent']}
@@ -230,6 +222,7 @@ def rebind_recipe(source, destination):
     write_json(destination / 'packages.json', manifest['packages'])
     stage_node(destination)
     manifest["parent_input_sha256"] = digest(source)
+    manifest['capabilities'] = ['membership-reconciliation-v1']
     manifest['validation_image'] = workload_reference(destination / 'runtime/validation-workload.tar')
     manifest["files"] = inventory(destination)
     write_json(destination / "input.json", manifest)
@@ -237,10 +230,22 @@ def rebind_recipe(source, destination):
     print("signed input recipe generation: " + str(destination / "input.json"), flush=True)
 
 
+def stage_recipe(destination):
+    """Include only public tools needed by build and standalone validation."""
+    for directory, suffixes in (('lab/packer', {'.py', '.hcl'}), ('lab/libvirt', {'.py'})):
+        target = Path(destination) / 'recipe' / directory
+        target.mkdir(parents=True)
+        for source in (ROOT / directory).iterdir():
+            if source.is_file() and source.suffix in suffixes:
+                shutil.copyfile(source, target / source.name)
+    shutil.copyfile(ROOT / 'lab/libvirt/ipv4-only.xml', Path(destination) / 'recipe/lab/libvirt/ipv4-only.xml')
+
+
 def stage_node(destination):
     """Compile before sealing the input bundle; offline Packer needs no Go toolchain."""
     target = Path(destination) / 'node'
     target.mkdir()
+    write_json(target / 'capabilities.json', {'capabilities': ['membership-reconciliation-v1']})
     environment = os.environ.copy()
     environment.update({'CGO_ENABLED': '0', 'GOOS': 'linux', 'GOARCH': 'amd64'})
     run(['go', 'build', '-trimpath', '-o', target / 'host-agent', './cmd/host-agent'], cwd=ROOT, env=environment)

@@ -1,5 +1,9 @@
 # Universal image validation
 
+This records the original image. For the current resizing-capable release, see
+[scaling image validation](scaling-image-results.md). Existing clusters created
+from this original image require one rebuild to enable resizing.
+
 The universal node image passed clean libvirt acceptance and was published
 locally as `release-universal-20261017`. All four guests cloned the same sealed
 disk. No guest binaries, runtime configuration, or membership records were

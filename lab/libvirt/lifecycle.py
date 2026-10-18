@@ -19,12 +19,13 @@ from lab.packer.artifacts import (
 from lab.packer.runtime import FILTER, NETWORK, domain_xml, make_spec
 from lab.libvirt.settings import Settings
 from lab.libvirt.cluster_config import init_env, load_config, read_env
+from lab.libvirt.scaling import Scaling, CAPABILITY, control_count, quorum_message
 
 BRIDGE = 'virbr-rke2'
 # Historical four-node list for legacy callers; provisioning uses node_names(count).
 NAMES = tuple(f'rke2-node{i:02}' for i in range(1, 5))
 LEGACY_NAMES = ('rke2-r9-cp01', 'rke2-r9-cp02', 'rke2-r9-cp03', 'rke2-r9-worker01')
-DEFAULT_RELEASE = ROOT / 'lab/artifacts/packer/release-universal-20261017/release.json'
+DEFAULT_RELEASE = ROOT / 'lab/artifacts/packer/release-scaling-20261018/release.json'
 HEALTH = 'sudo /usr/local/libexec/autonomous-rke2/host-agent -health'
 KUBECTL = 'sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml'
 
@@ -50,9 +51,14 @@ def write_private(path, content):
         stream.flush()
         os.fsync(stream.fileno())
     temporary.replace(path)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
-class Lab:
+class Lab(Scaling):
     def __init__(self, pool=None, *, cluster='lab', hostname_prefix=None, network=None,
                  subnet=None, reserved_cidrs=None, vm=None, enrollment_secret=None, input_files=()):
         self.options = dict(cluster=cluster, hostname_prefix=hostname_prefix, network=network,
@@ -64,6 +70,8 @@ class Lab:
         self.input_files = tuple(Path(path).resolve() for path in input_files)
         self.node_count = 3
         self._owned_names = ()
+        self.control_nodes = 3
+        self.force_remove = False
 
     def node_names(self, count):
         return tuple(f'{self.settings.hostname_prefix}{i:02}' for i in range(1, count + 1))
@@ -160,6 +168,8 @@ class Lab:
         print('Cluster: ' + self.settings.cluster)
         first, last = self.node_names(1)[0], f'{self.settings.hostname_prefix}{self.node_count:02}'
         print(f'Hostnames: {first}' + (f' through {last}' if self.node_count > 1 else ''))
+        if self.state_path.exists() and json.loads(self.state_path.read_text()).get('schema') == 2:
+            print('Surviving node indices remain unchanged; allocations may be sparse.')
         print('VMs: ' + (', '.join(name for name in self.owned_names if name in inventory['domains']) or '(none)'))
         print(f'Disk/settings directory: {self.pool} (exists: {self.pool.exists()})')
         print('Pools: ' + (', '.join(name for name, xml in inventory['pools'].items()
@@ -234,9 +244,14 @@ class Lab:
         if not self.state_path.exists():
             return self.node_names(count)
         state = json.loads(self.state_path.read_text())
-        if state.get('count') != count:
-            raise ImageError('existing deployment uses a different release/node count; destroy it first')
+        if state.get('count') != count and state.get('schema') != 2:
+            raise ImageError('existing image cannot resize: rebuild once with a scaling-capable release; different release/node count')
         names = tuple(node['name'] for node in state['nodes'])
+        if state.get('schema') == 2:
+            if (len(names) != state['count'] or len(set(names)) != len(names)
+                    or any(not self.owns_name(name) for name in names)):
+                raise ImageError('invalid saved node list; refusing')
+            return names
         if len(names) != count or names not in (self.node_names(count), self.legacy_names[:count]):
             raise ImageError('invalid saved node list; refusing')
         return names
@@ -246,12 +261,20 @@ class Lab:
         self.node_count = count
         if self.state_path.exists():
             state = json.loads(self.state_path.read_text())
-            if (state.get('schema'), state.get('release_sha256'), state.get('count')) != (1, release_hash, count):
+            if (state.get('schema') not in (1, 2) or state.get('release_sha256') != release_hash
+                    or (state.get('schema') == 1 and state.get('count') != count)):
                 raise ImageError('existing deployment uses a different release/node count; destroy it first')
             if self.enrollment_secret is not None and not hmac.compare_digest(state['secret'], self.enrollment_secret):
                 raise ImageError('ENROLLMENT_SECRET differs from saved deployment; restore it or recreate the cluster')
             self.deployment_names(count)
             for index, spec in enumerate(state['nodes']):
+                if state.get('schema') == 2:
+                    if type(spec['index']) is not int:
+                        raise ImageError('invalid saved sparse node index')
+                    index = spec['index'] - 1
+                    if (type(index) is not int or index < 0
+                            or spec['name'] != f'{self.settings.hostname_prefix}{index + 1:02}'):
+                        raise ImageError('invalid saved sparse node index')
                 for key, suffix in (('disk', '.qcow2'), ('nvram', '.vars.fd'),
                                     ('seed', '.iso'), ('serial', '.serial.log')):
                     if Path(spec[key]) != self.pool / (spec['name'] + suffix):
@@ -374,7 +397,9 @@ class Lab:
             command(['qemu-img', 'resize', temporary, str(spec['disk_gib']) + 'G'])
             os.chmod(temporary, 0o600)
             temporary.replace(disk)
-        info = json.loads(command(['qemu-img', 'info', '--output=json', disk]))
+        # Read metadata while an existing VM holds its normal writer lock.
+        # --force-share is read-only here; resize/convert never touch this disk.
+        info = json.loads(command(['qemu-img', 'info', '--force-share', '--output=json', disk]))
         if info.get('format') != 'qcow2' or info.get('backing-filename') or info.get('virtual-size') != spec['disk_gib'] * GIB:
             raise ImageError(f'{name}: expected standalone {spec["disk_gib"]} GiB QCOW2 disk; refusing to modify it')
         if not nvram.exists():
@@ -446,6 +471,8 @@ class Lab:
                          '"sudo journalctl -u autonomous-rke2-host-agent.service -n 100 --no-pager"')
 
     def boot(self, spec, state):
+        if state.get('schema') == 2 and not self.owned_vm(spec):
+            raise ImageError('prepared VM definition is missing; refusing boot')
         if not spec['boot_requested']:
             spec['boot_requested'] = True
             self.save(state)  # Record intent before boot, including crash windows.
@@ -457,11 +484,16 @@ class Lab:
         self.node_count = count
         self.check_ownership(inventory)
         self.settings.validate_nodes(count)
+        self.node_count = count
         print('Verifying signed universal release...', flush=True)
         manifest = verify_manifest(release)
         if manifest.get('kind') != 'release' or 'node' not in manifest.get('profiles', {}) or 'node.qcow2' not in manifest['files']:
             raise ImageError('a signed universal node release is required')
         self.check_networks(inventory)
+        if CAPABILITY in manifest.get('capabilities', []):
+            return self.create_scaling(release, manifest, count, timeout, inventory)
+        if self.control_nodes != 3:
+            raise ImageError('control_nodes requires a scaling-capable image; rebuild once with the new release')
         self.check_capacity(count, inventory)
         state = self.load_or_initialize(release, digest(release), count, inventory)
         self.ensure_settings(inventory)
@@ -511,7 +543,9 @@ def main(operation, argv=None):
     parser.add_argument('--reserved-cidr', action='append', help='additional Kubernetes/VPN/network range to avoid; repeatable')
     if operation == 'create':
         parser.add_argument('--release', type=Path, help='signed release.json')
-        parser.add_argument('--nodes', type=int, help='positive node count; first three are servers, later nodes workers (default: 3)')
+        parser.add_argument('--nodes', type=int, help='desired positive total node count (default: 3)')
+        parser.add_argument('--control-nodes', type=int, choices=(3, 5, 7), help='desired control target (default: 3)')
+        parser.add_argument('--force-remove', action='store_true', help='override drain workload protections; never bypass ownership/quorum')
         parser.add_argument('--timeout', type=int, help='health wait seconds per node (default: 1200)')
         parser.add_argument('--init-secrets', action='store_true', help='create missing paired .env only; never overwrite it or create VMs')
     else:
@@ -523,7 +557,7 @@ def main(operation, argv=None):
         if args.config:
             overrides = (args.cluster, args.hostname_prefix, args.network, args.subnet, args.reserved_cidr)
             if operation == 'create':
-                overrides += (args.release, args.nodes)
+                overrides += (args.release, args.nodes, args.control_nodes)
             if any(value is not None for value in overrides):
                 raise ImageError('--config cannot be combined with deployment overrides; edit the YAML instead')
             config = load_config(args.config, check_siblings=operation == 'create')
@@ -531,6 +565,7 @@ def main(operation, argv=None):
             args.cluster = config.cluster
             if operation == 'create':
                 args.release, args.nodes = config.release, config.nodes
+                args.control_nodes = config.control_nodes
                 args.timeout = args.timeout if args.timeout is not None else config.timeout
         else:
             args.cluster = args.cluster or 'lab'
@@ -539,9 +574,12 @@ def main(operation, argv=None):
             if operation == 'create':
                 args.release = args.release or DEFAULT_RELEASE
                 args.nodes = args.nodes if args.nodes is not None else 3
+                args.control_nodes = args.control_nodes if args.control_nodes is not None else 3
                 args.timeout = args.timeout if args.timeout is not None else 1200
         lab = Lab(**options, input_files=(config.path, config.env_path) if config else ())
         if operation == 'create':
+            lab.control_nodes = control_count(args.control_nodes)
+            lab.force_remove = args.force_remove
             lab.settings.validate_nodes(args.nodes)
             lab.node_count = args.nodes
         if config and operation == 'destroy' and lab.state_path.exists():
@@ -583,6 +621,15 @@ def main(operation, argv=None):
             if operation == 'create':
                 if lab.state_path.exists():
                     lab.deployment_names(args.nodes)
+                    saved = json.loads(lab.state_path.read_text())
+                    if saved.get('schema') == 2:
+                        if digest(args.release.resolve()) != saved['release_sha256']:
+                            raise ImageError('release differs; recreate the cluster')
+                        lab.describe_scaling(saved, args.nodes, args.control_nodes)
+                    elif args.control_nodes != 3:
+                        raise ImageError('control_nodes requires a scaling-capable image; rebuild once')
+                print(quorum_message(args.nodes, args.control_nodes))
+                lab.node_count = args.nodes
                 lab.check_networks(inventory)
             lab.plan(inventory)
             if operation == 'create':

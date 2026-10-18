@@ -16,13 +16,22 @@ hostname_prefix: dev-node
 
 # Signed universal release.json. Relative paths resolve from THIS YAML file's
 # directory, not the shell's working directory. The same disk serves every role.
-release: ../lab/artifacts/packer/release-universal-20261017/release.json
+release: ../lab/artifacts/packer/release-scaling-20261018/release.json
 
 # Any positive integer that fits host resources, subnet and image capacity.
 # The current image's membership catalog supports at most 1024 nodes.
-# 1 = one server; 2/3 = two/three servers; every node after the third is a worker.
-# Roles are automatic. Counts above 4 need no special configuration.
+# Rerun create after editing this total: supported images add/retire nodes.
+# Retiring a node deletes its local disk. Back up application data first.
 nodes: 3
+
+# Desired control-plane/etcd target: exactly 3, 5, or 7; optional, default 3.
+# Actual controls = min(nodes, control_nodes); remaining nodes are workers.
+# Smaller/even actual control counts warn about quorum resilience but are allowed.
+# Changing this target also replaces roles at an unchanged total, one node at a
+# time, adding a healthy replacement before retirement. Reserve one extra VM.
+# Scaling requires a new release advertising membership-reconciliation-v1;
+# older images need one rebuild. Create never rewrites this YAML or its .env.
+control_nodes: 3
 
 # Seconds to wait for each node's independent health check. A failed create can
 # be resumed with the same config. CLI --timeout may override this wait only.

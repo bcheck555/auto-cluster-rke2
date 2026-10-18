@@ -29,6 +29,7 @@ Copy [the commented template](../clusters/cluster.yaml.example). Relative
 | `hostname_prefix` | No | `rke2-CLUSTER-node`; special default `lab` uses `rke2-node` |
 | `release` | Yes | Signed universal `release.json` path |
 | `nodes` | Yes | Positive integer; current image catalog limit 1,024; host/subnet limits also apply |
+| `control_nodes` | No | `3`; accepts `3`, `5`, `7`; actual controls limited by total nodes |
 | `health_timeout` | No | `1200` seconds; `1..86400` |
 | `vm.vcpus` | No | `4`; `2..256` |
 | `vm.memory_mib` | No | `8192`; `4096..1048576` |
@@ -74,9 +75,10 @@ Address capacity is `subnet address count - 12`:
 | `/24` | 244 |
 | `/23` | 500 |
 
-Image and host limits can be smaller. The first three nodes are servers; larger
-counts add workers. The catalog ceiling is not a tested scale guarantee;
-[recorded acceptance](universal-image-results.md) covers four nodes and
+Image and host limits can be smaller. Controls fill the configured target;
+remaining nodes are workers. Replacements require one temporary extra address.
+The catalog ceiling is not a tested scale guarantee;
+[recorded acceptance](scaling-image-results.md) covers eight nodes and
 [larger-scale discovery validation](open-questions.md) remains outstanding.
 
 Every real `.yaml`/`.yml` in the selected config directory reserves cluster
@@ -140,11 +142,14 @@ python3 lab/libvirt/destroy.py --help
 | `--reserved-cidr CIDR` | Both, CLI mode | Repeatable extra reservation |
 | `--release PATH` | Create, CLI mode | Signed release |
 | `--nodes COUNT` | Create, CLI mode | Positive count |
+| `--control-nodes COUNT` | Create, CLI mode | Target `3`, `5`, or `7`; default `3` |
+| `--force-remove` | Create, either mode | Explicit workload drain override; ownership/quorum remain enforced |
 
 CLI-only create can choose an unused private `/24` or larger if subnet is omitted.
 YAML requires an explicit subnet. CLI-only deployments keep existing runtime
 secret behavior; use config mode for durable source inputs.
 
-Scripts share the image/lab operation lock. Release, count, resource, or network
+Scripts share the image/lab operation lock. Scaling-capable images reconcile
+counts and role targets; see [scaling](scaling.md). Release, resource, or network
 changes require recreation. Historical `replace.py` and `lab-config.example.json`
 target separate-role images, not the universal-image lifecycle.

@@ -140,6 +140,45 @@ class FakeHost:
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_atomic_journal_write_flushes_file_and_parent_directory(self):
+        import stat
+        calls = []
+        original = life.os.fsync
+        def fsync(fd):
+            calls.append(stat.S_ISDIR(life.os.fstat(fd).st_mode))
+            return original(fd)
+        with patch.object(life.os, 'fsync', side_effect=fsync):
+            life.write_private(Path(self.temp.name) / 'journal.json', '{}')
+        self.assertEqual(calls, [False, True])
+
+    def test_resume_inspects_running_disks_with_read_only_shared_access(self):
+        self.create()
+        def command(args, **kwargs):
+            if args[:2] == ['qemu-img', 'info'] and '--force-share' not in args:
+                raise life.ImageError('image is locked by a running VM')
+            return self.host.command(args, **kwargs)
+        with patch.object(life, 'command', side_effect=command):
+            self.create()
+        self.assertEqual(len(self.host.running), 3)
+
+    def test_signed_capability_routes_create_to_reconciler(self):
+        manifest = {'kind': 'release', 'profiles': {'node': {}}, 'files': {'node.qcow2': {}},
+                    'capabilities': ['membership-reconciliation-v1']}
+        self.lab.control_nodes = 5
+        with patch.object(life, 'verify_manifest', return_value=manifest), \
+                patch.object(self.lab, 'create_scaling') as reconcile:
+            self.lab.create(self.release, 7, 100, self.host.inventory())
+            reconcile.assert_called_once_with(self.release, manifest, 7, 100, self.host.inventory())
+
+    def test_old_image_rejects_control_target_without_mutating_domains(self):
+        manifest = {'kind': 'release', 'profiles': {'node': {}}, 'files': {'node.qcow2': {}}}
+        self.lab.control_nodes = 5
+        with patch.object(life, 'verify_manifest', return_value=manifest), \
+                self.assertRaisesRegex(life.ImageError, 'scaling-capable'):
+            self.lab.create(self.release, 5, 100, self.host.inventory())
+        self.assertFalse(self.host.domains)
+        self.assertFalse(self.pool.exists())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

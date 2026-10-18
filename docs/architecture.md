@@ -19,7 +19,7 @@ Each node runs these components:
 | Authenticated discovery | IPv4 multicast `239.192.42.42:9444` | Find deployment peers and pending/healthy clusters |
 | Enrollment HTTPS | Node IP, TCP 9443 | Healthy servers reserve and complete initial membership |
 | API health proxy | Loopback TCP 7443 on every node | Fail over among discovered or persisted server endpoints |
-| RKE2 server + embedded etcd | First three admitted nodes | Kubernetes control plane and membership serialization |
+| RKE2 server + embedded etcd | Nodes admitted up to control target (default 3; configurable 5 or 7) | Kubernetes control plane and membership serialization |
 | RKE2 agent | Subsequent admitted nodes | Worker runtime |
 | Membership ledger | Kubernetes ConfigMap, replicated by etcd | CAS reservations shared by all healthy servers |
 
@@ -39,8 +39,9 @@ ledger and health-reader RBAC. Only then does it advertise enrollment readiness.
 Later nodes pin the certificate/key carried by an authenticated discovery
 reply. A healthy server verifies the caller's persistent identity and source
 address, then reserves membership using Kubernetes resourceVersion CAS. Initial
-membership proceeds one node at a time: first three total members are servers,
-then workers. An uncertain reservation never expires into a reusable server
+membership proceeds one node at a time: controls fill the catalog's target,
+then workers. The mutable target is separate from immutable image policy.
+An uncertain reservation never expires into a reusable server
 slot. Repeated requests for the same identity and operation resume the same
 reservation; name/address/identity changes stop convergence.
 
@@ -59,7 +60,11 @@ On reboot, identity and journal load before discovery starts. The node restarts
 its recorded native role with its existing data and credentials, uses saved
 server addresses while discovery recovers, and checks recorded Node/etcd IDs.
 Missing completed data, changed configuration, or conflicting cluster identity
-halts convergence. There is no reset, promotion, removal, or cleanup path.
+halts convergence. Unattended reset, promotion, removal, and cleanup are absent.
+Explicit [libvirt reconciliation](scaling.md) uses a root-only node management
+CLI, catalog CAS operation ownership, serialized admission, and journaled
+retirement. It replaces roles with fresh nodes and retains retirement tombstones.
+No management operation is exposed on the public enrollment listener.
 
 This design assumes the first node is booted alone, then additional nodes join
 the reachable cluster. ID ordering reduces races among mutually visible fresh

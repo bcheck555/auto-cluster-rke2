@@ -75,7 +75,7 @@ func (p Plan) Validate() error {
 			return ErrInvalid
 		}
 	}
-	if p.TokenFile == "" || (p.Role == bootstrap.RoleServer && (p.AgentTokenFile == "" || p.AgentTokenFile == p.TokenFile)) || (p.Role == bootstrap.RoleAgent && p.AgentTokenFile != "") || !hashValid(p.CoreImageSHA256) || !hashValid(p.FlannelImageSHA256) || !hashValid(p.CoreDNSSHA256) || p.MinVotingServers < 1 || p.MinVotingServers > 3 {
+	if p.TokenFile == "" || (p.Role == bootstrap.RoleServer && (p.AgentTokenFile == "" || p.AgentTokenFile == p.TokenFile)) || (p.Role == bootstrap.RoleAgent && p.AgentTokenFile != "") || !hashValid(p.CoreImageSHA256) || !hashValid(p.FlannelImageSHA256) || !hashValid(p.CoreDNSSHA256) || p.MinVotingServers < 1 || p.MinVotingServers > 7 {
 		return ErrInvalid
 	}
 	return nil

@@ -32,6 +32,9 @@ func LoadSettings(path string) (Settings, error) {
 // Run starts only node-local services. Each clone receives the same private
 // deployment secret before first boot; no per-node role or endpoint is needed.
 func Run(ctx context.Context, s Settings, once bool, report func(error)) error {
+	if err := notRetired(s); err != nil {
+		return err
+	}
 	if s.Validate() != nil {
 		return ErrInvalid
 	}

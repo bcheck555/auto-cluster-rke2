@@ -8,6 +8,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -18,6 +19,7 @@ from .artifacts import GIB, ROOT, VERSIONS, ImageError, digest, preflight, run, 
 POOL = Path('/var/lib/libvirt/images/autonomous-rke2-lab')
 NETWORK = 'autonomous-rke2-isolated'
 FILTER = 'autonomous-rke2-ipv4-only'
+BRIDGE = 'virbr-rke2'
 OPERATOR_KEY = ROOT / 'lab/credentials/lab.pub'
 
 
@@ -27,9 +29,9 @@ def virsh(*args):
 
 def isolation():
     network = ET.fromstring(virsh('net-dumpxml', NETWORK))
-    if network.find('forward') is not None or network.findall('ip') or network.find('bridge').get('name') != 'virbr-rke2':
+    if network.find('forward') is not None or network.findall('ip') or network.find('bridge').get('name') != BRIDGE:
         raise ImageError('lab network isolation differs from approved configuration')
-    pool = ET.fromstring(virsh('pool-dumpxml', 'autonomous-rke2-lab'))
+    pool = ET.fromstring(virsh('pool-dumpxml', POOL.name))
     if pool.findtext('target/path') != str(POOL):
         raise ImageError('lab pool ownership differs')
     filt = ET.fromstring(virsh('nwfilter-dumpxml', FILTER))
@@ -37,7 +39,7 @@ def isolation():
              and any(m.get('protocolid') in ('0x86dd', 'ipv6') for m in r.findall('mac'))]
     if not drops:
         raise ImageError('required IPv6 isolation filter missing')
-    bridge = json.loads(run(['ip', '-j', 'address', 'show', 'virbr-rke2']))
+    bridge = json.loads(run(['ip', '-j', 'address', 'show', BRIDGE]))
     if any(a.get('scope') != 'link' for d in bridge for a in d.get('addr_info', [])):
         raise ImageError('isolated bridge has a host address')
 
@@ -201,17 +203,29 @@ def reports(spec):
     if not path.exists():
         return []
     result = []
-    for match in re.finditer(rb'IMAGE_REPORT=([A-Za-z0-9+/=]+)', path.read_bytes()):
-        try:
-            result.append(json.loads(base64.b64decode(match[1])))
-        except (ValueError, UnicodeDecodeError):
-            continue
+    # Kernel console messages can interrupt a long base64 write. Strip only
+    # timestamped kernel lines inside each report, preserving the source log.
+    for chunk in path.read_bytes().split(b'IMAGE_REPORT=')[1:]:
+        chunk = re.sub(rb'\[\s*\d+\.\d+\][^\r\n]*[\r\n]+', b'', chunk)
+        encoded = b''
+        for line in chunk.splitlines():
+            if not line:
+                continue
+            match = re.match(rb'([A-Za-z0-9+/=]+)', line)
+            if not match:
+                break
+            encoded += match[1]
+            try:
+                result.append(json.loads(base64.b64decode(encoded)))
+                break
+            except (ValueError, UnicodeDecodeError):
+                if match.end() != len(line):
+                    break
     return result
 
 
 def wait_report(spec, after=0, timeout=1800):
     deadline = time.monotonic() + timeout
-    diagnosed = False
     while time.monotonic() < deadline:
         require_owner(spec)
         found = reports(spec)
@@ -220,20 +234,8 @@ def wait_report(spec, after=0, timeout=1800):
             if not spec.get('last_boot_id') or report.get('boot_id') != spec['last_boot_id']:
                 spec['last_boot_id'] = report.get('boot_id')
                 return report
-        if not diagnosed and time.monotonic() > deadline - timeout + 150 and spec.get('diagnostic_path'):
-            diagnosed = True
-            from .console import diagnose
-            try:
-                diagnostic = diagnose(spec)
-                write_json(spec['diagnostic_path'], diagnostic)
-                print('saved private smoke diagnostic: ' + spec['diagnostic_path'], flush=True)
-                report = diagnostic.get('boot_report')
-                if (report and report.get('boot_id') == diagnostic['boot_id'] and
-                        report.get('boot_id') != spec.get('last_boot_id')):
-                    spec['last_boot_id'] = report['boot_id']
-                    return report
-            except Exception as exc:
-                write_json(spec['diagnostic_path'], {'diagnostic_error': type(exc).__name__})
+        # Serial diagnostics temporarily unlock the test account. Run them only
+        # after failure, never concurrently with the report's password check.
         time.sleep(3)
     raise ImageError('guest validation timed out: ' + spec['name'] + '; inspect ' + spec['serial'])
 
@@ -296,7 +298,7 @@ def check_test_collisions():
         # Static lab allocations are not libvirt DHCP leases; inspect known addresses and neighbor cache.
         if any(t in ET.tostring(xml, encoding='unicode') for t in targets):
             raise ImageError('temporary address already allocated')
-    neighbors = json.loads(run(['ip', '-j', 'neigh', 'show', 'dev', 'virbr-rke2']))
+    neighbors = json.loads(run(['ip', '-j', 'neigh', 'show', 'dev', BRIDGE]))
     if any(n.get('dst') in targets for n in neighbors):
         raise ImageError('temporary address appears in bridge neighbor cache')
     for name in virsh('list', '--name').split():
@@ -387,7 +389,44 @@ def validation_storage_budget(candidate):
     return memory_bytes
 
 
+def validate_cached_formation(candidate, formation, operator_key):
+    if (formation.get('passed') is not True
+            or formation.get('same_image_sha256') != candidate['profiles']['node']['sha256']):
+        raise ImageError('cached formation evidence does not bind this disk')
+    clusters, identities = set(), set()
+    for index in range(4):
+        name = 'image-test-formation-' + str(index + 1)
+        evidence = formation['nodes'][name]
+        before, after = evidence['boot'], evidence['reboot']
+        spec = {'name': name, 'address': '192.168.250.' + str(241 + index),
+                'profile': 'node', 'host_id': before['host_id'], 'input_sha256': candidate['input_sha256']}
+        for report in (before, after):
+            validate_report(spec, report, operator_key, smoke=True)
+        first, last = before['smoke']['formation'], after['smoke']['formation']
+        if (any(first.get(k) != last.get(k) for k in ('ClusterID', 'HostID', 'Role'))
+                or any(first['Evidence'].get(k) != last['Evidence'].get(k)
+                       for k in ('NodeUID', 'EtcdClusterID', 'EtcdMemberID'))
+                or last['Role'] != ('server' if index < 3 else 'agent')):
+            raise ImageError('cached formation identities or roles differ across reboot')
+        if last['HostID'] in identities:
+            raise ImageError('cached formation repeats a host identity')
+        identities.add(last['HostID'])
+        clusters.add(last['ClusterID'])
+        if index < 3 and last['Evidence']['VotingServers'] != 3:
+            raise ImageError('cached formation lacks three voters')
+    first = formation['nodes']['image-test-formation-1']['reboot']['smoke']
+    if (len(clusters) != 1 or first.get('nodes_ready') != 4
+            or not first.get('cross_node_service') or not first.get('cross_node_pod')):
+        raise ImageError('cached formation networking evidence is incomplete')
+
+
 def test_candidate(candidate_path, output):
+    from .validation_network import isolated_validation
+    with isolated_validation(sys.modules[__name__], Path(candidate_path).parent):
+        return _test_candidate(candidate_path, output)
+
+
+def _test_candidate(candidate_path, output):
     if os.geteuid() != 0:
         raise ImageError('libvirt validation requires root')
     candidate = verify_manifest(candidate_path)
@@ -409,6 +448,7 @@ def test_candidate(candidate_path, output):
     import hashlib
     results['test_runner_sha256'] = hashlib.sha256(runner).hexdigest()
     checkpoint = output.parent / 'validation-progress.json'
+    cached_formation = None
     if checkpoint.exists():
         from .artifacts import trust, verify_signature
         fingerprint, keyring = trust()
@@ -417,6 +457,7 @@ def test_candidate(candidate_path, output):
         if previous.get('candidate_sha256') != digest(candidate_path):
             raise ImageError('validation checkpoint belongs to a different candidate')
         results['profiles'] = previous.get('profiles', {})
+        cached_formation = previous.get('formation')
     def save_progress():
         write_json(checkpoint, results)
         sign(checkpoint)
@@ -469,7 +510,20 @@ def test_candidate(candidate_path, output):
             save_progress()
             discard(spec)
             owned.remove(spec)
-        results['formation'] = validate_formation(candidate, bases['node'], directory, operator_key, owned, output, runner)
+        if cached_formation:
+            validate_cached_formation(candidate, cached_formation, operator_key)
+            results['formation'] = cached_formation
+            print('reused signed formation/reboot evidence for this disk', flush=True)
+        else:
+            results['formation'] = validate_formation(candidate, bases['node'], directory, operator_key, owned, output, runner)
+        save_progress()
+        if 'membership-reconciliation-v1' in candidate.get('capabilities', []):
+            for spec in reversed(owned):
+                if not absent(spec['name']):
+                    discard(spec)
+            owned.clear()
+            from .scaling_acceptance import validate_scaling
+            results['scaling'] = validate_scaling(candidate_path, candidate, output)
         isolation()
         results['passed'] = True
     except Exception:
