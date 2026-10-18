@@ -25,250 +25,105 @@ installed and disabled on node images; the OS base keeps it active.
 
 The universal image passed four-VM formation, simultaneous reboot, and network
 acceptance. See [artifacts and validation results](docs/universal-image-results.md).
-Physical hardware validation remains pending.
-Existing lab VMs and historical releases have not been replaced or bootstrapped
-by this change. [Previous lab evidence](docs/offline-image-results.md) describes
-the earlier separate-role images, not acceptance of the universal image.
+Physical hardware validation remains pending. [Previous lab evidence](docs/offline-image-results.md)
+describes the earlier separate-role images, not acceptance of the universal image.
 
-## TL;DR: delete and recreate the local VM cluster
+## TL;DR: destroy or create the local VM lab
 
-These commands target this repository's **local libvirt lab** on the current
-Linux/KVM host. They permanently delete its workloads, volumes, VM disks,
-NVRAM, cloud-init seeds, enrollment secret, and libvirt settings. Back up needed
-data first. Published images and repository signing/SSH keys remain available.
-No teardown or deployment happens merely by updating this README.
+Run these scripts from your normal SSH shell. Each `sudo python3` invocation
+exits back to that shell on success or failure; no interactive root shell,
+exported variables, or pasted shell settings are needed. Commands target only
+local `qemu:///system` on the hypervisor.
 
-If your prompt already starts with `root@`, skip this command. Otherwise run
-**only this command**, then wait for the new root prompt before copying the
-setup block below. Pasting a shell-launch command together with later commands
-can leave those later commands queued in the original shell instead of running
-them in the new root shell.
-
-```bash
-sudo bash
-```
-
-Run the remaining blocks, in order, in **that same root Bash shell**. If a
-command fails, stop and resolve the error; `set -e` may exit the shell, losing
-its variables. Rerun this entire setup block after entering a new shell. Do not
-continue until it prints `Setup complete; continue in this shell`.
+If you used the earlier pasted runbook, reconnect SSH first to clear any
+`set -e`/`set -u` settings left in that shell. Those settings can close a shell
+when a command fails; these scripts never enable them.
 
 ```bash
 cd /home/checkb/repos/github/auto-cluster
-set -euo pipefail
-test "$EUID" -eq 0
-umask 077
-export LIBVIRT_DEFAULT_URI=qemu:///system
-pool=/var/lib/libvirt/images/autonomous-rke2-lab
-release="$PWD/lab/artifacts/packer/release-universal-20261017"
 
-# Verify the signed release and every listed file BEFORE deleting anything.
-python3 - "$release/release.json" <<'PY'
-import sys
-from lab.packer.artifacts import verify_manifest
-release = verify_manifest(sys.argv[1])
-assert release['kind'] == 'release' and 'node' in release['profiles']
-print('Universal release verified')
-PY
-for tool in virsh qemu-img qemu-system-x86_64 genisoimage ssh ssh-keygen; do
-  command -v "$tool" >/dev/null
-done
-test -f /usr/share/OVMF/OVMF_CODE_4M.fd
-test -f /usr/share/OVMF/OVMF_VARS_4M.fd
-cluster_preflight=verified
-echo 'Setup complete; continue in this shell'
+# Inspect cleanup targets without changing anything.
+sudo python3 lab/libvirt/destroy.py --plan
+
+# PERMANENTLY DELETE lab workloads, disks, NVRAM, seeds, credentials and settings.
+sudo python3 lab/libvirt/destroy.py --confirm-lab autonomous-rke2-lab
 ```
 
-**Delete the old cluster.** Stop all members before removing any disks. Names
-include an optional fourth node created by this recipe. The pool directory must
-contain only this lab's files; inspect it and ensure no other VM uses its disks.
-This also removes retained replacement generations and rollback copies.
+Back up needed data before destroying. Teardown handles partial deployments,
+missing definitions, orphaned files, inactive pools/networks, and repeated runs.
+It deletes `/var/lib/libvirt/images/autonomous-rke2-lab` including retained old
+generations and rollback copies, plus the lab's VM/network/pool/filter
+definitions and empty leftover bridge. It refuses cleanup if unrelated VMs use
+these resources, ownership differs, or mounts remain inside the disk directory.
+Published images, repository signing/SSH keys, and unrelated VMs remain intact.
+Remove or replace any old kubeconfig you copied outside the lab directory.
+
+After destroy succeeds, create a fresh three-server cluster:
 
 ```bash
-set -euo pipefail
-: "${pool:?Setup missing; rerun the setup block in this shell}"
-: "${cluster_preflight:?Setup incomplete; rerun the setup block}"
-test "$cluster_preflight" = verified
-test "$pool" = /var/lib/libvirt/images/autonomous-rke2-lab
-test "${LIBVIRT_DEFAULT_URI:-}" = qemu:///system
-virsh list --all
-virsh pool-dumpxml autonomous-rke2-lab
-ls -la "$pool"
-
-nodes=(rke2-r9-cp01 rke2-r9-cp02 rke2-r9-cp03 rke2-r9-worker01)
-for node in "${nodes[@]}"; do
-  if virsh dominfo "$node" >/dev/null 2>&1; then
-    if virsh list --name | grep -Fxq "$node"; then
-      virsh destroy "$node"
-    fi
-  fi
-done
-for node in "${nodes[@]}"; do
-  if virsh dominfo "$node" >/dev/null 2>&1; then
-    virsh undefine "$node" --nvram --managed-save \
-      --snapshots-metadata --checkpoints-metadata
-  fi
-done
-if virsh net-info autonomous-rke2-isolated >/dev/null 2>&1; then
-  if virsh net-list --name | grep -Fxq autonomous-rke2-isolated; then
-    virsh net-destroy autonomous-rke2-isolated
-  fi
-  virsh net-undefine autonomous-rke2-isolated
-fi
-if virsh pool-info autonomous-rke2-lab >/dev/null 2>&1; then
-  if virsh pool-list --name | grep -Fxq autonomous-rke2-lab; then
-    virsh pool-destroy autonomous-rke2-lab
-  fi
-  virsh pool-undefine autonomous-rke2-lab
-fi
-if virsh nwfilter-dumpxml autonomous-rke2-ipv4-only >/dev/null 2>&1; then
-  virsh nwfilter-undefine autonomous-rke2-ipv4-only
-fi
-test "$pool" = /var/lib/libvirt/images/autonomous-rke2-lab
-rm -rf --one-file-system -- "$pool"
+sudo python3 lab/libvirt/create.py
 ```
 
-**Create the new cluster.** Requires at least 24 GiB guest RAM, 12 guest vCPUs,
-and space for three independent 60 GiB virtual disks. Set `count = 4` below for
-an additional worker (8 GiB RAM, 4 vCPUs). All nodes use the same signed image.
-The isolated network has no external forwarding; `192.168.250.1` gives this
-hypervisor local SSH/API access. Ensure `192.168.250.0/24` does not overlap
-another host network. The old `replace.py` and default lab config still target
-historical images; use this recipe for the universal release.
+For three servers **and a fourth worker**, use this command instead:
 
 ```bash
-set -euo pipefail
-: "${pool:?Setup missing; rerun the setup block in this shell}"
-: "${release:?Setup missing; rerun the setup block in this shell}"
-: "${cluster_preflight:?Setup incomplete; rerun the setup block}"
-test "$cluster_preflight" = verified
-test "$pool" = /var/lib/libvirt/images/autonomous-rke2-lab
-test "${LIBVIRT_DEFAULT_URI:-}" = qemu:///system
-install -d -m 0711 "$pool"
-cat > "$pool/network.xml" <<'XML'
-<network>
-  <name>autonomous-rke2-isolated</name>
-  <bridge name='virbr-rke2' stp='on' delay='0'/>
-  <dns enable='no'/>
-  <ip address='192.168.250.1' netmask='255.255.255.0'/>
-</network>
-XML
-virsh net-define "$pool/network.xml"
-virsh net-start autonomous-rke2-isolated
-virsh net-autostart autonomous-rke2-isolated
-virsh pool-define-as autonomous-rke2-lab dir --target "$pool"
-virsh pool-start autonomous-rke2-lab
-virsh pool-autostart autonomous-rke2-lab
-virsh nwfilter-define lab/libvirt/ipv4-only.xml
-ssh-keygen -q -t ed25519 -N '' -f "$pool/operator"
-
-# Reuse tested VM-definition helpers; create ordinary deployment seeds.
-python3 - "$release/node.qcow2" "$pool" <<'PY'
-import json, os, secrets, shutil, subprocess, sys
-from pathlib import Path
-from lab.packer.runtime import domain_xml, make_spec
-
-image, directory = map(Path, sys.argv[1:])
-count = 3  # Change to 4 to include a worker.
-secret = secrets.token_hex(32)
-key = (directory / 'operator.pub').read_text().strip()
-for i in range(1, count + 1):
-    name = f'rke2-r9-cp{i:02}' if i <= 3 else 'rke2-r9-worker01'
-    spec = make_spec(name, f'192.168.250.{10 + i}', 'node', directory)
-    seed = directory / (name + '-seed')
-    seed.mkdir(mode=0o700)
-    userdata = {
-        'hostname': name, 'preserve_hostname': False, 'ssh_deletekeys': True,
-        'disable_root': True, 'ssh_pwauth': False,
-        'package_update': False, 'package_upgrade': False,
-        'users': [{'name': 'rke2lab', 'shell': '/bin/bash', 'lock_passwd': True,
-                   'sudo': ['ALL=(ALL) NOPASSWD: ALL'],
-                   'ssh_authorized_keys': [key]}],
-        'write_files': [{'path': '/etc/autonomous-rke2/enrollment-secret',
-                         'owner': 'root:root', 'permissions': '0600',
-                         'content': secret}],
-        'runcmd': [['systemctl', 'enable', '--now', 'qemu-guest-agent'],
-                   ['systemctl', 'restart', '--no-block',
-                    'autonomous-rke2-host-agent.service']]}
-    network = {'version': 2, 'ethernets': {'rke2lab0': {
-        'match': {'macaddress': spec['mac']}, 'set-name': 'rke2lab0',
-        'dhcp4': False, 'dhcp6': False, 'accept-ra': False,
-        'addresses': [spec['address'] + '/24'],
-        'routes': [{'to': '10.43.0.0/16', 'via': '0.0.0.0'}]}}}
-    (seed / 'user-data').write_text('#cloud-config\n' + json.dumps(userdata))
-    (seed / 'meta-data').write_text(json.dumps({
-        'instance-id': spec['instance_id'], 'local-hostname': name}))
-    (seed / 'network-config').write_text(json.dumps(network))
-    subprocess.run(['genisoimage', '-quiet', '-output', spec['seed'], '-volid',
-                    'cidata', '-joliet', '-rock',
-                    *map(str, (seed / p for p in
-                              ('user-data', 'meta-data', 'network-config')))], check=True)
-    subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'qcow2',
-                    str(image), spec['disk']], check=True)
-    subprocess.run(['qemu-img', 'resize', spec['disk'], '60G'], check=True)
-    shutil.copyfile('/usr/share/OVMF/OVMF_VARS_4M.fd', spec['nvram'])
-    xml = directory / (name + '.xml')
-    xml.write_text(domain_xml(spec))
-    for path in (spec['seed'], spec['disk'], spec['nvram']):
-        os.chmod(path, 0o600)
-    subprocess.run(['virsh', 'define', str(xml)], check=True)
-PY
-
-# Accept fresh SSH host keys into a private, deployment-specific file.
-labssh() {
-  ssh -i "$pool/operator" -o IdentitiesOnly=yes -o BatchMode=yes \
-    -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
-    -o UserKnownHostsFile="$pool/known_hosts" "rke2lab@$1" "${@:2}"
-}
-wait_healthy() {
-  local address=$1
-  for ((attempt=0; attempt<120; attempt++)); do
-    if labssh "$address" \
-      'sudo /usr/local/libexec/autonomous-rke2/host-agent -health'; then
-      return 0
-    fi
-    sleep 10
-  done
-  echo "Node unhealthy: $address; inspect host-agent journal before continuing" >&2
-  return 1
-}
-
-# First node creates the cluster. Gate every subsequent boot on health.
-virsh start rke2-r9-cp01
-wait_healthy 192.168.250.11
-virsh start rke2-r9-cp02
-wait_healthy 192.168.250.12
-virsh start rke2-r9-cp03
-wait_healthy 192.168.250.13
-if virsh dominfo rke2-r9-worker01 >/dev/null 2>&1; then
-  virsh start rke2-r9-worker01
-  wait_healthy 192.168.250.14
-fi
-
-# Use bundled kubectl; no host Kubernetes client required.
-labssh 192.168.250.11 \
-  'sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml wait --for=condition=Ready node --all --timeout=300s'
-labssh 192.168.250.11 \
-  'sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide'
-labssh 192.168.250.11 \
-  'sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get pods -A'
-labssh 192.168.250.11 'sudo cat /etc/rancher/rke2/rke2.yaml' \
-  | sed 's/127.0.0.1/192.168.250.11/g' > "$pool/admin.yaml"
-chmod 600 "$pool/admin.yaml"
-# If kubectl is installed on this host:
-# kubectl --kubeconfig "$pool/admin.yaml" get nodes
+sudo python3 lab/libvirt/create.py --nodes 4
 ```
 
-Expect three Ready server nodes, plus one Ready worker if requested. Restore
-applications/data separately. For a failed boot, run
-`labssh 192.168.250.11 'sudo journalctl -u autonomous-rke2-host-agent.service -n 100 --no-pager'`
-(substitute the failing IP). Existing nodes retain identity on reboot; a fresh
-cluster requires the teardown and fresh disks above. This recipe leaves VM
-autostart disabled: after a host reboot, start all existing servers before
-waiting for quorum and health, then start workers. The first-node-alone gate
-applies to initial cluster creation. Runtime formation itself needs no external
-server or Internet. Any old kubeconfig copied elsewhere must be removed or
-replaced separately; the commands never alter your global kubeconfig.
+Default signed release:
+`lab/artifacts/packer/release-universal-20261017/release.json`. To choose another
+universal release, add `--release /absolute/path/to/release.json`. Each node
+requires 8 GiB RAM, 4 vCPUs, and an independent 60 GiB virtual disk. Creation
+requires 8 GiB additional available host RAM and disk reserve; allow 60 GiB free
+disk per new VM. Host prerequisites: running system libvirt/KVM, Python 3,
+`virsh`, `ip`, `qemu-img`, `qemu-system-x86_64`, `genisoimage`, `ssh`,
+`ssh-keygen`, `gpgv`, repository artifact trust files, and
+`/usr/share/OVMF/{OVMF_CODE_4M.fd,OVMF_VARS_4M.fd}`. No guest Internet access is
+required.
+
+Create verifies the signed release, generates fresh identities and one shared
+enrollment secret, prepares disks/seeds, and boots the first node alone. Each
+additional node starts after the previous node passes its health check. The
+isolated network uses `192.168.250.0/24` without external forwarding; the
+hypervisor gets `192.168.250.1` for management. Servers use `.11`–`.13`, the
+optional worker `.14`. These subnets and the pod/service networks
+`10.42.0.0/16`, `10.43.0.0/16` must not overlap other host networks.
+
+**If create fails or is interrupted, resolve the reported error and rerun the
+same command.** It resumes using saved identities, disks, and secret; it does
+not silently reset a cluster. Health waits default to 1,200 seconds per node;
+override with `--timeout SECONDS`. Use destroy followed by create when you want
+a genuinely fresh cluster. Old manually created leftovers require destroy
+before the first scripted create. Errors retain files and report retry steps.
+
+VM autostart stays disabled. To start this existing cluster after a host reboot,
+rerun the same create command: previously booted nodes start before health
+checks so existing etcd voters can regain quorum. This differs from the
+first-node-alone sequence used for a fresh cluster. Keep the same release and
+`--nodes` value when resuming. Saved deployment state and secret reside in the
+root-only `universal-lab.json` inside the lab disk directory. Both scripts share
+the existing image/lab operation lock.
+
+Create prints node/pod status and saves a root-only admin kubeconfig. If a host
+`kubectl` is installed:
+
+```bash
+sudo kubectl --kubeconfig /var/lib/libvirt/images/autonomous-rke2-lab/admin.yaml get nodes -o wide
+```
+
+For diagnostics (substitute `.12`, `.13`, or `.14` for another node):
+
+```bash
+sudo ssh -i /var/lib/libvirt/images/autonomous-rke2-lab/operator \
+  -o UserKnownHostsFile=/var/lib/libvirt/images/autonomous-rke2-lab/known_hosts \
+  rke2lab@192.168.250.11 \
+  'sudo journalctl -u autonomous-rke2-host-agent.service -n 100 --no-pager'
+```
+
+The old `replace.py` and default lab config target historical separate-role
+images. Use [create.py](lab/libvirt/create.py) and [destroy.py](lab/libvirt/destroy.py)
+for the universal-image lab. Applications and persistent data must be restored
+separately after a fresh deployment.
 
 Development uses the Go version pinned in `go.mod`:
 
