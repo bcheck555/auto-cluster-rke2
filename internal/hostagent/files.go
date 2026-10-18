@@ -133,3 +133,7 @@ func baselineConfig(data []byte) bool {
 	s := strings.TrimSpace(string(data))
 	return s == "selinux: true" || s == "selinux: true\ncni: flannel"
 }
+
+// EnsureDirectory and WritePrivateFile are shared by the node-resident lifecycle.
+func EnsureDirectory(path string) error               { return ensureDirectory(path) }
+func WritePrivateFile(path string, data []byte) error { return writePrivate(path, data) }

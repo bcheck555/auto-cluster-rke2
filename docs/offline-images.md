@@ -1,4 +1,23 @@
-# Offline images and Phase 1 replacement
+# Offline images
+
+Current builds produce `os.qcow2` plus one universal `node.qcow2`. The node
+image coinstalls both RKE2 roles, contains the agent binary and enabled boot
+service, and selects its role only at runtime. The signed input includes that
+binary, unit and public source snapshot. Fresh candidate validation now boots
+four clones from the same disk, verifies automatic formation and reboot, and
+gates publication on signed evidence for that image. A published node disk can
+be exported as signed raw format without writing a physical device.
+
+Follow [universal node build/deployment](universal-node.md) for current commands,
+the common enrollment secret, first-node-first assumptions, and acceptance
+requirements. Existing lab machines and prior signed releases remain untouched.
+
+## Historical separate-role image and replacement record
+
+The remainder describes the earlier three-profile release and its completed
+Phase 1 replacement. Its separate authority/role requirements are superseded
+by the universal-node design. Retain it for historical trust, ownership and
+rollback context; it is not the current node startup procedure.
 
 Three profiles share Rocky 9.8, SELinux Enforcing, and a retained signed local
 RPM repository. `os` enables and starts firewalld. `server` and `agent` retain

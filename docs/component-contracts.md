@@ -1,5 +1,11 @@
 # Component contracts (implementation blueprint)
 
+This blueprint describes the earlier external-authority packages. Current
+runtime contracts live in `internal/formation` (`Runtime`, `Backend`,
+`EnrollmentClient`, `Node`) and reuse `identity`, `state`, `durable`, and the
+offline `hostagent` runtime. See [current architecture](architecture.md).
+Legacy grant/authority signatures below are not part of universal-node boot.
+
 These Go signatures define component boundaries. Identity and journal filesystem
 implementations now exist; see [durable storage](durable-state.md). Authenticated
 discovery and bootstrap authority are [implemented](bootstrap-authority.md);

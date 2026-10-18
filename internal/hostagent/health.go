@@ -14,9 +14,13 @@ import (
 	"time"
 
 	"autonomous-rke2/internal/bootstrap"
+	"autonomous-rke2/internal/identity"
 )
 
 const clusterIdentityPath = "/api/v1/namespaces/kube-system/configmaps/autonomous-rke2-identity"
+
+// Pinned RKE2 separates etcd's HTTPS gateway from its gRPC client listener.
+const EtcdHTTPURL = "https://127.0.0.1:2382"
 
 type TLSFiles struct {
 	CA   string
@@ -52,15 +56,40 @@ func TLSClient(files TLSFiles) (*http.Client, error) {
 }
 
 type HealthChecker struct {
-	Observer TLSFiles // read-only Kubernetes identity for agents
-	client   func(TLSFiles) (*http.Client, error)
-	apiURL   string // tests only; production uses fixed local server or pinned API origin
-	etcdURL  string
+	Observer       TLSFiles        // read-only Kubernetes identity for agents
+	ObserverSigner identity.Signer // node-resident enrollment never exports a host key
+	client         func(TLSFiles) (*http.Client, error)
+	apiURL         string // tests only; production uses fixed local server or pinned API origin
+	etcdURL        string
 }
 
 func (h *HealthChecker) newClient(files TLSFiles) (*http.Client, error) {
 	if h.client != nil {
 		return h.client(files)
+	}
+	if h.ObserverSigner != nil && files.Cert == h.Observer.Cert && files.CA == h.Observer.CA {
+		ca, err := ReadFile(files.CA, false, 1<<20)
+		if err != nil {
+			return nil, ErrWaiting
+		}
+		cert, err := ReadFile(files.Cert, false, 1<<20)
+		if err != nil {
+			return nil, ErrWaiting
+		}
+		chain, err := CertificateChain(cert)
+		if err != nil {
+			return nil, ErrReconcile
+		}
+		signer, err := identity.NewCryptoSigner(context.Background(), h.ObserverSigner)
+		if err != nil {
+			return nil, ErrReconcile
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(ca) {
+			return nil, ErrReconcile
+		}
+		tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, Certificates: []tls.Certificate{{Certificate: chain, PrivateKey: signer}}, MinVersion: tls.VersionTLS13}, Proxy: nil, DialContext: (&net.Dialer{Timeout: 2 * time.Second}).DialContext, TLSHandshakeTimeout: 2 * time.Second, ResponseHeaderTimeout: 2 * time.Second, MaxResponseHeaderBytes: 16384}
+		return &http.Client{Transport: tr, Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
 	}
 	return TLSClient(files)
 }
@@ -167,7 +196,11 @@ func (h *HealthChecker) Check(ctx context.Context, p Plan, host string, initiali
 	}
 	_, server := node.Metadata.Labels["node-role.kubernetes.io/control-plane"]
 	_, etcd := node.Metadata.Labels["node-role.kubernetes.io/etcd"]
-	if (p.Role == bootstrap.RoleServer && (!server || !etcd)) || (p.Role == bootstrap.RoleAgent && (server || etcd)) {
+	if p.Role == bootstrap.RoleServer && (!server || !etcd) {
+		// RKE2 applies these labels after kubelet first registers the node.
+		return evidence, ErrWaiting
+	}
+	if p.Role == bootstrap.RoleAgent && (server || etcd) {
 		return evidence, ErrReconcile
 	}
 	ready, ip := false, false
@@ -238,7 +271,7 @@ func (h *HealthChecker) etcd(ctx context.Context, p Plan) (Evidence, error) {
 		return evidence, err
 	}
 	defer client.CloseIdleConnections()
-	endpoint := "https://127.0.0.1:2379"
+	endpoint := EtcdHTTPURL
 	if h.etcdURL != "" {
 		endpoint = h.etcdURL
 	}
@@ -280,8 +313,11 @@ func (h *HealthChecker) etcd(ctx context.Context, p Plan) (Evidence, error) {
 		}
 		for _, peer := range member.PeerURLs {
 			if peer == "https://"+net.JoinHostPort(p.NodeIP, "2380") {
-				if member.ID != local.Header.MemberID || member.IsLearner {
+				if member.ID != local.Header.MemberID {
 					return evidence, ErrReconcile
+				}
+				if member.IsLearner {
+					return evidence, ErrWaiting
 				}
 				found++
 			}

@@ -1,28 +1,72 @@
-# Proposed architecture
+# Universal node architecture
 
-## Component boundaries
+The deployment unit is one disk image. Every clone contains both pinned RKE2
+role packages, offline container archives and chart overrides, the node agent,
+and its enabled systemd unit. Roles are selected at runtime. A generic sealed
+image contains no enrollment secret, host private key, formation journal,
+registration tokens, cluster certificates, or datastore state.
 
-1. **Host bootstrap agent** (`cmd/host-agent`, systemd on every Rocky 9 node): persistent unique identity, signed bootstrap grants, authenticated discovery, durable operation journal, idempotent RKE2 server/agent install and join, local health, and reboot-safe resume. It does not decide to create a cluster from a timeout and exposes no arbitrary shell interface.
-2. **Membership controller** (`cmd/membership-controller`, Kubernetes): reconciles desired versus actual server membership only while API and embedded etcd health are proven; selects eligible workers and records recovery operations. It does not perform destructive recovery while the control plane is unavailable.
-3. **Host-side fencing authority/service** (`cmd/fence-service` on the development host for lab): narrow authenticated API to inspect and power off only project-owned libvirt domains. Nodes never receive unrestricted libvirt socket/API access. Production fencing is an interchangeable Redfish/BMC implementation, not part of the lab's security claim.
-4. **Bootstrap authority**: independent pre-cluster trust root that issues a single-use signed first-cluster grant and persistent cluster UUID. Development-host implementation is lab-only and not HA. Production must provide a redundant authority or documented operator-mediated authorization.
+Each node runs these components:
 
-## Trust and data flow
+| Component | Location | Responsibility |
+| --- | --- | --- |
+| Node agent | `autonomous-rke2-host-agent.service` | Discovery, durable formation, health, fixed-role restart |
+| Host identity and journal | `/var/lib/autonomous-rke2` on that node | Unique Ed25519 identity and immutable cluster/role intent |
+| Authenticated discovery | IPv4 multicast `239.192.42.42:9444` | Find deployment peers and pending/healthy clusters |
+| Enrollment HTTPS | Node IP, TCP 9443 | Healthy servers reserve and complete initial membership |
+| API health proxy | Loopback TCP 7443 on every node | Fail over among discovered or persisted server endpoints |
+| RKE2 server + embedded etcd | First three admitted nodes | Kubernetes control plane and membership serialization |
+| RKE2 agent | Subsequent admitted nodes | Worker runtime |
+| Membership ledger | Kubernetes ConfigMap, replicated by etcd | CAS reservations shared by all healthy servers |
 
-Discovery is an address hint over the isolated lab L2 segment (evaluate mDNS/DNS-SD first); every response is authenticated and bound to the persistent cluster UUID. Discovery never carries a plaintext registration token. A host presents its unique key/identity to the authority; the authority issues narrowly scoped, expiring credentials for initialization or joining. RKE2 registration uses its documented stable endpoint and credentials are stored with restrictive permissions, not logged. Kubernetes API and etcd health are observed separately.
+No component runs on a separate authority or management host. The hypervisor
+and connected artifact build/signing tools are outside the runtime cluster.
+Physical hosts run the same userspace and formation code.
 
-## Role and recovery flow
+The first node waits through its startup grace and a complete authenticated
+discovery cycle. If no cluster is advertised, it persists a new cluster UUID,
+advertises pending formation, generates separate server/worker passwords, and
+starts RKE2 server. After Kubernetes, its Node, and etcd are independently
+healthy, it writes the immutable cluster marker and initializes the membership
+ledger and health-reader RBAC. Only then does it advertise enrollment readiness.
 
-Policy defaults to three voting RKE2 servers, with workloads enabled on servers and eligible workers. Initial server creation requires a signed grant. Additional servers/agents join only under authenticated policy. Recovery requires: surviving quorum; evidence distinguishing transient partition from host failure; authority approval; positive fencing confirmation; exact etcd member identity; documented member removal; a controlled agent stop/reconfigure/server start; etcd synchronization; and audit completion. Any quorum loss, ambiguous identity, or inconclusive fence stops automation. Returning nodes are reconciled against cluster UUID and member identity before any local state change.
+Later nodes pin the certificate/key carried by an authenticated discovery
+reply. A healthy server verifies the caller's persistent identity and source
+address, then reserves membership using Kubernetes resourceVersion CAS. Initial
+membership proceeds one node at a time: first three total members are servers,
+then workers. An uncertain reservation never expires into a reusable server
+slot. Repeated requests for the same identity and operation resume the same
+reservation; name/address/identity changes stop convergence.
 
-## Rocky/RHEL node platform
+The admission server observes actual Kubernetes readiness and etcd membership
+before completing a reservation. Server members share the same replicated
+ledger. Workers receive only a CA-pinned worker token and a read-only health
+certificate bound to their own host key. All private keys stay local. RKE2
+registration uses the responding server's native supervisor port. RKE2's own
+client load balancer retains discovered server addresses across reboots.
+Read-only API health traffic uses a node-local TCP proxy with end-to-end cluster
+TLS. No external VIP, DNS seed, or load balancer is required.
 
-All profiles derive from the same pinned x86_64 Rocky 9.8 GenericCloud source. Signed standalone OS, server, and agent images are built offline; deployment cloud-init supplies identity, networking, operator access, and validation. Provisioning creates unique machine IDs, host IDs, SSH host keys, domain UUIDs, and NVRAM. Cluster identity is created only during separately authorized bootstrap. The OS profile keeps firewalld enabled and active; RKE2 profiles keep it installed, inactive, and disabled. Both RKE2 services remain masked in unjoined guests. Install RKE2 and `rke2-selinux` from verified local EL9 RPM closures, configure `selinux: true`, and preserve SELinux Enforcing. Use Flannel VXLAN; pod NetworkPolicy enforcement is deferred. No Ubuntu guest configuration is permitted. See `docs/offline-images.md`; RHEL validation remains separate in `docs/rocky-to-rhel9.md`.
+On reboot, identity and journal load before discovery starts. The node restarts
+its recorded native role with its existing data and credentials, uses saved
+server addresses while discovery recovers, and checks recorded Node/etcd IDs.
+Missing completed data, changed configuration, or conflicting cluster identity
+halts convergence. There is no reset, promotion, removal, or cleanup path.
 
-## Initial topology and constraints
+This design assumes the first node is booted alone, then additional nodes join
+the reachable cluster. ID ordering reduces races among mutually visible fresh
+peers; it cannot guarantee one cluster across network partitions or hidden
+groups of fresh nodes. See [discovery assumptions](discovery-decision.md).
 
-The approved Phase 1 lab contains three Rocky VMs on an isolated network with no bridge IP, DHCP, or forwarding and with IPv6 filtered at guest NICs. The development host remains outside Kubernetes. Image and replacement preflight preserve 300 GiB disk and 32 GiB RAM reserves, including existing lab commitments and temporary resources. Physical media remains unverified. `hyperv1`, `default`, and every pre-existing pool remain protected. Expansion to five nodes and production cluster bootstrap remain later tasks; the approved replacement scope is limited to the three unjoined Phase 1 guests.
+NIC names may differ between nodes. Automatic selection ignores RKE2's CNI
+interfaces after startup. Because Flannel chart arguments are cluster-wide,
+every server emits the same subnet-based IP regex for uplink selection; no
+server's local NIC name becomes global configuration, and a default route is
+unnecessary. Nodes share one IPv4 subnet, outside the pod/service ranges. See
+[Flannel interface flags](https://github.com/flannel-io/flannel/blob/master/main.go)
+and the [RKE2 Flannel DaemonSet template](https://github.com/rancher/rke2-charts/blob/main/charts/rke2-flannel/rke2-flannel/v0.28.907/templates/daemonset.yaml).
 
-## Failure guarantees and non-goals
-
-Peer discovery cannot establish first-cluster authority. Leader election has no meaningful safe winner when there is no preexisting shared authority; a partitioned set of brand-new hosts may each believe it is first. Only an external authority/grant prevents this. Three-member etcd tolerates one failure; five-member etcd requires three votes. Automatic quorum reset is disabled. KubeVirt, Windows guests, AD, distributed storage, and production Redfish operations are deferred until Rocky guest cluster formation and failure acceptance tests pass.
+The node also maintains a link route for its fixed Kubernetes service CIDR,
+with a distinct metric. This lets kube-proxy perform initial OUTPUT routing
+on isolated hosts without a default gateway. Default routes remain under the
+site network configuration; the acceptance seed does not inject this route.

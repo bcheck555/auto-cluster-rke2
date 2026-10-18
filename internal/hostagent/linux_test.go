@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,7 @@ func linuxFixture(t *testing.T) (*LinuxRuntime, Plan, *[]string) {
 	write("/usr/lib/os-release", []byte("ID=rocky\nVERSION_ID=\"9.8\"\n"), 0644)
 	write(configPath, []byte("selinux: true\ncni: flannel\n"), 0600)
 	write("/etc/NetworkManager/conf.d/rke2-flannel.conf", []byte("[keyfile]\nunmanaged-devices=interface-name:flannel*;interface-name:cni*;interface-name:veth*\n"), 0644)
+	write("/etc/sysconfig/rke2-server", []byte("# Packaged RPM environment\nHOME=/root\n"), 0644)
 	write(p.TokenFile, []byte(strings.Repeat("s", 48)), 0600)
 	write(p.AgentTokenFile, []byte(strings.Repeat("a", 48)), 0600)
 	write(images+"rke2-images-core.linux-amd64.tar.zst", core, 0644)
@@ -54,6 +56,8 @@ func linuxFixture(t *testing.T) (*LinuxRuntime, Plan, *[]string) {
 	r := &LinuxRuntime{root: root, command: func(_ context.Context, path string, args ...string) ([]byte, error) {
 		calls = append(calls, path+" "+strings.Join(args, " "))
 		switch path {
+		case "/usr/sbin/ip":
+			return nil, nil
 		case "/usr/sbin/getenforce":
 			return []byte("Enforcing\n"), nil
 		case "/usr/bin/rpm":
@@ -144,6 +148,151 @@ func TestLinuxOfflinePreparationAndAllowlistedStart(t *testing.T) {
 	info, err := os.Stat(r.path(configPath))
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatal("configuration permissions")
+	}
+}
+
+func TestSealedEmptyRPMDirectoriesAreNotRuntimeState(t *testing.T) {
+	r, _, _ := linuxFixture(t)
+	path := r.path("/var/lib/rancher/rke2/server/db/snapshots")
+	if err := os.MkdirAll(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := r.Existing(context.Background()); err != nil || found {
+		t.Fatal("empty RPM directories blocked bootstrap", found, err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "snapshot"), []byte("state"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := r.Existing(context.Background()); err != nil || !found {
+		t.Fatal("runtime state not detected", found, err)
+	}
+}
+
+func TestRuntimeEnvironmentRejectsUnapprovedOverrides(t *testing.T) {
+	for _, override := range []string{"HOME=/tmp", "RKE2_CONFIG_FILE=/tmp/config.yaml", "RKE2_TOKEN=override"} {
+		t.Run(strings.Split(override, "=")[0], func(t *testing.T) {
+			r, p, _ := linuxFixture(t)
+			if err := os.WriteFile(r.path("/etc/sysconfig/rke2-server"), []byte(override+"\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.Inspect(context.Background(), p, strings.Repeat("a", 64)); !errors.Is(err, ErrReconcile) {
+				t.Fatal("unapproved environment override accepted", err)
+			}
+		})
+	}
+}
+
+func TestLinuxHealthWaitsForNativeNotifyReadiness(t *testing.T) {
+	for _, active := range []string{"activating", "inactive", "failed"} {
+		t.Run(active, func(t *testing.T) {
+			r, p, _ := linuxFixture(t)
+			r.command = func(_ context.Context, path string, args ...string) ([]byte, error) {
+				if path != "/usr/bin/systemctl" || strings.Join(args, " ") != "is-active rke2-server.service" {
+					t.Fatal("unexpected readiness command", path, args)
+				}
+				return []byte(active), nil
+			}
+			r.Health = &HealthChecker{client: func(TLSFiles) (*http.Client, error) {
+				t.Fatal("stale Kubernetes readiness consulted before local runtime started")
+				return nil, ErrWaiting
+			}}
+			if _, err := r.Check(context.Background(), p, strings.Repeat("a", 64), false); err != ErrWaiting {
+				t.Fatal("unfinished native runtime accepted", err)
+			}
+		})
+	}
+}
+
+func TestNativeSupervisorPortWithLocalHealthProxy(t *testing.T) {
+	p := validPlan()
+	p.Mode = "join"
+	p.RegistrationURL = "https://192.0.2.11:9345"
+	p.APIURL = "https://127.0.0.1:7443"
+	data, err := p.RenderConfig(strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["server"] != p.RegistrationURL || config["tls-san"].([]any)[0] != "127.0.0.1" {
+		t.Fatal("native registration or local API TLS origin changed")
+	}
+	p.RegistrationURL = "https://127.0.0.1:9344"
+	if p.Validate() == nil {
+		t.Fatal("translated supervisor port would poison RKE2's cached endpoints")
+	}
+}
+
+func TestWorkerRegistrationUsesRKE2NodeUsername(t *testing.T) {
+	r, p, _ := linuxFixture(t)
+	p.Mode = "join"
+	p.Role = "agent"
+	p.AgentTokenFile = ""
+	prefix := "K10" + strings.Repeat("a", 64) + "::"
+	for _, username := range []string{"node:", "agent:", "server:"} {
+		if err := os.WriteFile(r.path(p.TokenFile), []byte(prefix+username+strings.Repeat("s", 64)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := r.tokenDigest(p)
+		if (username == "node:") != (err == nil) {
+			t.Fatalf("username %s: %v", username, err)
+		}
+	}
+}
+
+func TestNodeNetworkPreparationOwnsOnlyClusterServiceRoute(t *testing.T) {
+	r, p, calls := linuxFixture(t)
+	if err := r.EnsureNetwork(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	want := "/usr/sbin/ip route replace 10.43.0.0/16 dev " + p.Interface + " scope link metric 42760"
+	if len(*calls) != 1 || (*calls)[0] != want {
+		t.Fatal("unexpected route mutation", *calls)
+	}
+	p.Interface = "eth0; reboot"
+	if err := r.EnsureNetwork(context.Background(), p); !errors.Is(err, ErrInvalid) {
+		t.Fatal("invalid interface accepted", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatal("invalid input reached network command")
+	}
+}
+
+func TestCompletedServerRequiresEtcdDatabaseAndWALNotJustCertificates(t *testing.T) {
+	r, _, _ := linuxFixture(t)
+	write := func(path string) {
+		t.Helper()
+		full := r.path(path)
+		if err := os.MkdirAll(filepath.Dir(full), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("state"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("/var/lib/rancher/rke2/server/tls/server-ca.crt")
+	if data, err := r.hasData(); err != nil || !data {
+		t.Fatal("leftovers not detected", data, err)
+	}
+	if r.requiredData("server") {
+		t.Fatal("certificates counted as an intact datastore")
+	}
+	db := "/var/lib/rancher/rke2/server/db/etcd/member/snap/db"
+	write(db)
+	if r.requiredData("server") {
+		t.Fatal("database without WAL accepted")
+	}
+	write("/var/lib/rancher/rke2/server/db/etcd/member/wal/0000000000000000-0000000000000000.wal")
+	if !r.requiredData("server") {
+		t.Fatal("intact datastore rejected")
+	}
+	if err := os.Remove(r.path(db)); err != nil {
+		t.Fatal(err)
+	}
+	if r.requiredData("server") {
+		t.Fatal("lost database allowed automatic restart")
 	}
 }
 

@@ -1,0 +1,9 @@
+{
+  "StateDirectory": "/var/lib/autonomous-rke2",
+  "SecretFile": "/etc/autonomous-rke2/enrollment-secret",
+  "Interface": "",
+  "CoreImageSHA256": "REPLACE_WITH_SIGNED_CORE_ARCHIVE_SHA256",
+  "FlannelImageSHA256": "REPLACE_WITH_SIGNED_FLANNEL_ARCHIVE_SHA256",
+  "CoreDNSSHA256": "REPLACE_WITH_SIGNED_COREDNS_OVERRIDE_SHA256",
+  "BootstrapDelaySeconds": 30
+}

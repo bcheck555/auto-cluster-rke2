@@ -1,83 +1,30 @@
-# Implementation roadmap
+# Implementation status
 
-Build a reproducible RKE2 host agent and membership controller that form one
-authorized cluster, maintain server membership, and recover only with proven
-quorum and confirmed fencing. Rocky Linux 9 is the lab platform; RHEL 9
-portability remains unvalidated. The development host stays outside the cluster.
+Implemented universal-image path:
 
-## Current baseline
+- Node-resident authenticated multicast discovery and HTTPS enrollment.
+- First-node bootstrap, pending-cluster advertisement, and durable restart.
+- Three-server limit followed by workers, with quorum-backed CAS reservations.
+- Native RKE2 registration failover, local API health proxy, and persisted server endpoints.
+- Distinct server/worker credentials and host-key-bound health certificates.
+- Independent Kubernetes/etcd checks and certificate renewal.
+- Universal image package closure, enabled boot service, sealed-state checks,
+  signed raw export, and four-clone candidate validation/publication gate.
+- Local controller, auth, concurrency, endpoint failover, and image-contract tests.
 
-- Durable host identity and revision-guarded operation journals are implemented
-  with private Linux filesystem storage. See [storage behavior and validation](durable-state.md).
-- Authenticated HTTPS discovery, persistent cluster pins, and an enrolled-host
-  bootstrap/join authority with atomic single-use grants are implemented.
-  See [trust provisioning, APIs, and validation](bootstrap-authority.md).
-- Host-agent and authority binaries, systemd templates, pinned offline runtime
-  configuration, signed grant-status resumption, and independent Node/etcd health
-  checks are implemented. See [deployment inputs and execution gates](host-agent.md).
-- Membership controller and concrete fencing providers remain unimplemented.
-- The isolated three-VM lab and signed offline image workflow are implemented.
-  See [current image and replacement results](offline-image-results.md),
-  [image lifecycle](offline-images.md), and [original lab results](phase1-lab-results.md).
-- Current RKE2 guests have SELinux Enforcing and RKE2 installed but masked and
-  unjoined. Firewalld remains installed and disabled in RKE2 profiles; the OS
-  baseline profile keeps it active.
+The fresh universal image passed offline builds and four-clone libvirt
+acceptance: first-alone bootstrap, automatic server/server/worker joins,
+simultaneous reboot with stable IDs, three voting servers, offline DNS, and
+cross-node workload connectivity. See [validation results](universal-image-results.md).
 
-## Remaining implementation
+Remaining hardware acceptance: validate the raw disk on representative physical
+hosts, including boot firmware, network drivers, unique machine identity, and
+persistent storage. Existing lab generations remain unchanged.
 
-1. Execute the [host-agent deployment gates](host-agent.md) with approved trust
-   inputs, authority networking, and an operator-managed stable registration
-   endpoint. Initial implementation uses explicit authenticated endpoint hints;
-   validate any future mDNS browser on the exact lab network before enabling it.
-   Observe one server, then three voting servers and two workers only after
-   capacity assessment and approval for expansion. Verify Node and etcd health,
-   scheduling, SELinux service execution, and interruption behavior on guests.
-2. Implement the membership controller, least-privilege Kubernetes manifests,
-   documented etcd membership operations, and a narrowly scoped host fencing
-   service. Guests receive no general libvirt or arbitrary command access.
-   Recovery must prove quorum, establish failure evidence, obtain authority,
-   confirm fresh fencing for the exact host, remove only the identified stale
-   member, and journal the authorized worker-to-server transition through etcd
-   synchronization. Ambiguity stops recovery. Reconcile returning nodes without
-   duplicate identities or members; retain append-only, redacted audit evidence.
-3. Implement and run the acceptance suite below on Rocky guests. Require bounded
-   timeouts, explicit preconditions, before/after inventory checks, and results in
-   ignored `lab/results/`. Complete two clean-room runs using tracked sources and
-   approved local inputs. Expected results never count as observed passes.
+Future work: deployment-key and cluster-CA rotation, address migration, tested
+manual reservation reconciliation, lifecycle upgrades, and separately gated
+fencing/recovery procedures. General partition-proof zero-touch bootstrap
+requires a stronger assumption or external coordination; it is not promised.
 
-## Acceptance scenarios
-
-| ID | Scenario | Required outcome |
-| --- | --- | --- |
-| A | First server | Authorized cluster; healthy single-member etcd |
-| B | Two additional servers | Three healthy voting members |
-| C | Two workers | Ready workers; correct roles and scheduling |
-| D | Concurrent bootstrap | Exactly one cluster identity |
-| E | Server failure | Replacement only after confirmed fencing |
-| F | Failed node returns | Reconciled identity; no duplicate etcd member |
-| G | Partition without fencing | No replacement and no new cluster |
-| H | Two-of-three quorum loss | Automation halts and reports quorum loss |
-| I | Interrupted install, join, or promotion | Safe journaled resumption |
-| J | Repeated restart | Stable identity and idempotent behavior |
-
-Run Go unit/race tests, vet, formatting, and lab tooling tests at relevant gates.
-Pin lint tooling before making it a required check. Validate profile-specific
-firewalld policy and SELinux Enforcing in guest acceptance checks.
-
-## Scope boundaries
-
-[Architecture](architecture.md), [component contracts](component-contracts.md),
-[state machine](state-machine.md), [trust model](trust-and-threat-model.md), and
-[recovery runbooks](recovery-runbooks.md) retain the detailed design. Track unresolved
-decisions in [open questions](open-questions.md).
-
-Keep current signed release/input artifacts, credentials, validation evidence,
-and rollback journals/disks. Failed build payloads and redundant extraction caches
-may be removed after proving they are unused; do not infer VM or pool ownership
-from names. Create source/deployment directories when implementations need them.
-
-Production requires a redundant external authority and validated fencing; Redfish
-remains an interface until actual BMC access is authorized. Validate RHEL 9 before
-claiming support. Licensing and the final module namespace remain owner decisions.
-KubeVirt, Multus, CSI, and Windows/AD workload research follows successful cluster
-acceptance; installing or deploying those systems is outside the current scope.
+Prior external-authority prototypes remain historical code and tests. The
+earlier separate-role lab evidence remains separate from universal-image results.

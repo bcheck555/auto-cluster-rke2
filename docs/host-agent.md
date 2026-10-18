@@ -1,5 +1,10 @@
 # Initial host-agent lifecycle and deployment
 
+Historical authority-backed lifecycle. The current `cmd/host-agent` uses
+[universal node formation](universal-node.md); its flags, configuration and
+systemd boot path have changed. The following describes the earlier prototype
+and must not be used to configure universal images.
+
 `cmd/host-agent` implements initial convergence on the pinned offline Rocky 9.8
 server/agent images. `cmd/bootstrap-authority` serves the existing signed
 discovery and mutual-TLS grant APIs. Systemd templates, public configuration

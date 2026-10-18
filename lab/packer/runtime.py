@@ -108,12 +108,14 @@ def prepare_seed(spec, operator_key, extra_files=None, smoke=None):
             ['ln', '-sf', '/etc/systemd/system/autonomous-image-validation.service',
              '/etc/systemd/system/cloud-init.target.wants/autonomous-image-validation.service'],
             ['systemctl', 'start', '--no-block', 'autonomous-image-validation.service']]}
-    network = {'version': 2, 'ethernets': {'rke2lab0': {'match': {'macaddress': spec['mac']}, 'set-name': 'rke2lab0',
+    interface = spec.get('interface', 'rke2lab0')
+    network = {'version': 2, 'ethernets': {interface: {'match': {'macaddress': spec['mac']}, 'set-name': interface,
                'dhcp4': False, 'dhcp6': False, 'accept-ra': False, 'addresses': [spec['address'] + '/24']}}}
-    if smoke:
+    if smoke and not smoke.get('formation_smoke'):
         # OUTPUT DNAT still requires an initial route lookup. This on-link route
         # reaches only the service CIDR and survives reboot without a default route.
-        network['ethernets']['rke2lab0']['routes'] = [{'to': '10.43.0.0/16', 'via': '0.0.0.0'}]
+        network['ethernets'][interface]['routes'] = [{'to': '10.43.0.0/16', 'via': '0.0.0.0'}]
+    if smoke:
         userdata['runcmd'].insert(0, ['systemctl', 'daemon-reload'])
     (directory / 'user-data').write_text('#cloud-config\n' + json.dumps(userdata))
     write_json(directory / 'meta-data', {'instance-id': spec['instance_id'], 'local-hostname': spec['name']})
@@ -260,9 +262,10 @@ def validate_report(spec, report, operator_key, *, smoke=False):
     packages = report.get('packages', {})
     if not packages.get('firewalld') or (profile == 'os' and any(packages.get(p) for p in ('rke2-server', 'rke2-agent'))):
         raise ImageError('installed packages differ from image profile')
-    if profile != 'os' and (not packages.get('rke2-' + profile) or not packages.get('rke2-selinux')):
+    required_roles = ('server', 'agent') if profile == 'node' else (profile,)
+    if profile != 'os' and (any(not packages.get('rke2-' + role) for role in required_roles) or not packages.get('rke2-selinux')):
         raise ImageError('RKE2 role or SELinux package missing')
-    if profile != 'os' and packages.get('rke2-' + ('agent' if profile == 'server' else 'server')):
+    if profile in ('server', 'agent') and packages.get('rke2-' + ('agent' if profile == 'server' else 'server')):
         raise ImageError('image has an incompatible installed role')
     if not smoke and report.get('cluster_state_absent') is not True:
         raise ImageError('unjoined guest contains cluster state')
@@ -285,7 +288,7 @@ def reboot_report(spec, operator_key, *, smoke=False):
 
 
 def check_test_collisions():
-    targets = {'192.168.250.241', '192.168.250.242', '192.168.250.243'}
+    targets = {'192.168.250.' + str(i) for i in range(241, 245)}
     for name in virsh('list', '--all', '--name').split():
         xml = current(name)
         if name.startswith('image-test-'):
@@ -302,6 +305,88 @@ def check_test_collisions():
             raise ImageError('temporary address already used by running guest')
 
 
+def validate_formation(candidate, image, directory, operator_key, owned, output, runner):
+    """All guests clone one image; only the common site secret is supplied."""
+    secret = secrets.token_hex(32)
+    extra = [{'path': '/etc/autonomous-rke2/enrollment-secret', 'content': secret,
+              'permissions': '0600', 'owner': 'root:root'},
+             {'path': '/etc/autonomous-rke2/test-runner.py', 'content': base64.b64encode(runner).decode(),
+              'encoding': 'b64', 'permissions': '0600', 'owner': 'root:root'},
+             {'path': '/etc/systemd/system/autonomous-image-validation.service.d/test-runner.conf',
+              'owner': 'root:root', 'permissions': '0644',
+              'content': '[Service]\nExecStart=\nExecStart=/usr/bin/python3 /etc/autonomous-rke2/test-runner.py report\n'}]
+    result = {'same_image_sha256': candidate['profiles']['node']['sha256'], 'nodes': {}}
+    specs = []
+    cluster = None
+    identities = set()
+    for index in range(4):
+        spec = make_spec('image-test-formation-' + str(index + 1), '192.168.250.' + str(241 + index), 'node', directory)
+        spec['interface'] = 'rke2test' + str(index)
+        spec['input_sha256'] = candidate['input_sha256']
+        spec['diagnostic_path'] = str(output.parent / (spec['name'] + '-diagnostic.json'))
+        owned.append(spec)
+        specs.append(spec)
+        launch(spec, image, operator_key, extra_files=extra, smoke={'formation_smoke': True})
+        report = wait_report(spec)
+        validate_report(spec, report, operator_key, smoke=True)
+        health = report['smoke']['formation']
+        expected_role = 'server' if index < 3 else 'agent'
+        if health['Role'] != expected_role or health['HostID'] in identities:
+            raise ImageError('automatic role or unique identity validation failed')
+        identities.add(health['HostID'])
+        if cluster is None:
+            cluster = health['ClusterID']
+        if health['ClusterID'] != cluster:
+            raise ImageError('clones formed different clusters')
+        result['nodes'][spec['name']] = {'boot': report}
+        print('self-forming clone healthy: ' + str(index + 1), flush=True)
+    # Reboot every member together: journals must restart known roles, never
+    # create a fresh cluster while discovery/services are coming back online.
+    counts = {spec['name']: len(reports(spec)) for spec in specs}
+    for spec in specs:
+        require_owner(spec)
+        virsh('reboot', spec['uuid'])
+    for spec in specs:
+        report = wait_report(spec, after=counts[spec['name']])
+        validate_report(spec, report, operator_key, smoke=True)
+        before = result['nodes'][spec['name']]['boot']['smoke']['formation']
+        after = report['smoke']['formation']
+        for field in ('ClusterID', 'HostID', 'Role'):
+            if before[field] != after[field]:
+                raise ImageError('formation assignment changed across reboot')
+        for field in ('NodeUID', 'EtcdClusterID', 'EtcdMemberID'):
+            if before['Evidence'][field] != after['Evidence'][field]:
+                raise ImageError('cluster/node/etcd identity changed across reboot')
+        if after['Role'] == 'server' and after['Evidence']['VotingServers'] != 3:
+            raise ImageError('three-server voting membership missing')
+        result['nodes'][spec['name']]['reboot'] = report
+    first = result['nodes'][specs[0]['name']]['reboot']['smoke']
+    if first.get('nodes_ready') != 4 or not first.get('cross_node_service') or not first.get('cross_node_pod'):
+        raise ImageError('universal cluster networking validation incomplete')
+    result['passed'] = True
+    return result
+
+
+def validation_storage_budget(candidate):
+    """Reserve full guest growth on disk, or bounded tmpfs when RAM permits.
+
+    The fallback preserves both host reserves; it never discounts existing lab
+    commitments or removes an older generation to make room.
+    """
+    copies = sum(pin['size'] for pin in candidate['profiles'].values())
+    try:
+        preflight(extra_disk=129 * GIB + copies, extra_memory_mib=34816)
+        return None
+    except ImageError as error:
+        if not str(error).startswith('insufficient disk'):
+            raise
+    # Four 32-GiB disks, qcow2 metadata/growth slack, and copied immutable bases.
+    memory_bytes = 144 * GIB + copies
+    preflight(extra_disk=128 * 1024**2,
+              extra_memory_mib=34816 + (memory_bytes + 1024**2 - 1) // 1024**2)
+    return memory_bytes
+
+
 def test_candidate(candidate_path, output):
     if os.geteuid() != 0:
         raise ImageError('libvirt validation requires root')
@@ -312,12 +397,13 @@ def test_candidate(candidate_path, output):
         raise ImageError('validation output already exists')
     isolation()
     check_test_collisions()
-    preflight(extra_disk=65 * GIB + sum(pin['size'] for pin in candidate['profiles'].values()), extra_memory_mib=16384)
+    memory_storage = validation_storage_budget(candidate)
     directory = POOL / ('image-test-' + uuid.uuid4().hex[:12])
     directory.mkdir(mode=0o711)
     operator_key = OPERATOR_KEY.read_text().strip()
     owned = []
     results = {'schema': 1, 'candidate_sha256': digest(candidate_path), 'passed': False, 'profiles': {}, 'smoke': {}}
+    results['storage'] = {'kind': 'tmpfs' if memory_storage else 'disk', 'byte_limit': memory_storage}
     results['validator_sha256'] = digest(Path(__file__))
     runner = (ROOT / 'lab/packer/guest.py').read_bytes()
     import hashlib
@@ -335,7 +421,12 @@ def test_candidate(candidate_path, output):
         write_json(checkpoint, results)
         sign(checkpoint)
         os.chmod(checkpoint, 0o644)
+    memory_mounted = False
     try:
+        if memory_storage:
+            run(['mount', '-t', 'tmpfs', '-o', f'size={memory_storage},mode=0711,nodev,nosuid',
+                 'autonomous-image-validation', directory])
+            memory_mounted = True
         # Bases copied inside traversable libvirt pool. Source candidates never become writable disks.
         bases = {}
         for profile, pin in candidate['profiles'].items():
@@ -346,7 +437,7 @@ def test_candidate(candidate_path, output):
             os.chmod(path, 0o444)
             bases[profile] = path
         identities = {'machine_id': set(), 'ssh_fingerprint': set(), 'host_id': set()}
-        for index, profile in enumerate(('os', 'server', 'agent')):
+        for index, profile in enumerate(('os', 'node')):
             print('validating offline boot/reboot: ' + profile, flush=True)
             spec = make_spec('image-test-' + profile, '192.168.250.' + str(241 + index), profile, directory)
             spec['input_sha256'] = candidate['input_sha256']
@@ -378,54 +469,7 @@ def test_candidate(candidate_path, output):
             save_progress()
             discard(spec)
             owned.remove(spec)
-        # Dedicated ephemeral authority: no production bootstrap authority or artifact signing secret enters a guest.
-        authority = directory / 'test-authority'
-        print('validating disposable offline server/agent cluster', flush=True)
-        authority.mkdir(mode=0o700)
-        run(['gpg', '--homedir', authority, '--batch', '--pinentry-mode', 'loopback', '--passphrase', '',
-             '--quick-generate-key', 'Disposable offline image test', 'ed25519', 'sign', '0'])
-        public = subprocess.run(['gpg', '--homedir', str(authority), '--export'], capture_output=True, check=True).stdout
-        server = make_spec('image-test-smoke-server', '192.168.250.241', 'server', directory)
-        agent = make_spec('image-test-smoke-agent', '192.168.250.242', 'agent', directory)
-        for spec in (server, agent):
-            spec['input_sha256'] = candidate['input_sha256']
-            spec['diagnostic_path'] = str(output.parent / (spec['name'] + '-diagnostic.json'))
-        grant = directory / 'test-grant.json'
-        write_json(grant, {'purpose': 'offline-image-smoke', 'nonce': secrets.token_hex(32),
-                          'hosts': [server['host_id'], agent['host_id']], 'expires': time.time() + 7200})
-        run(['gpg', '--homedir', authority, '--batch', '--detach-sign', grant])
-        token = secrets.token_urlsafe(48)
-        def secret(name, content):
-            return {'path': '/etc/autonomous-rke2/' + name, 'content': base64.b64encode(content).decode(),
-                    'encoding': 'b64', 'permissions': '0600', 'owner': 'root:root'}
-        extra = [secret('test-authority.gpg', public), secret('test-grant.json', grant.read_bytes()),
-                 secret('test-grant.json.sig', Path(str(grant) + '.sig').read_bytes()), secret('test-token', token.encode()),
-                 secret('test-runner.py', runner),
-                 {'path': '/etc/systemd/system/autonomous-image-validation.service.d/test-runner.conf',
-                  'owner': 'root:root', 'permissions': '0644',
-                  'content': '[Service]\nExecStart=\nExecStart=/usr/bin/python3 /etc/autonomous-rke2/test-runner.py report\n'}]
-        for spec in (server, agent):
-            owned.append(spec)
-            launch(spec, bases[spec['profile']], operator_key, extra_files=extra,
-                   smoke={'smoke': True, 'server_address': server['address'], 'agent_name': agent['name']})
-        for spec in (server, agent):
-            first = wait_report(spec)
-            validate_report(spec, first, operator_key, smoke=True)
-            print('smoke boot passed: ' + spec['profile'], flush=True)
-            results['smoke'][spec['profile']] = {'boot': first}
-        counts = {s['name']: len(reports(s)) for s in (server, agent)}
-        for spec in (server, agent):
-            require_owner(spec)
-            virsh('reboot', spec['uuid'])
-        for spec in (server, agent):
-            second = wait_report(spec, after=counts[spec['name']])
-            validate_report(spec, second, operator_key, smoke=True)
-            results['smoke'][spec['profile']]['reboot'] = second
-        server_results = results['smoke']['server']
-        if server_results['boot']['smoke']['cluster_uid'] != server_results['reboot']['smoke']['cluster_uid']:
-            raise ImageError('smoke cluster identity changed across reboot')
-        if any(r['smoke'].get('nodes_ready') != 2 or not r['smoke'].get('cross_node_service') for r in server_results.values()):
-            raise ImageError('server cluster checks incomplete')
+        results['formation'] = validate_formation(candidate, bases['node'], directory, operator_key, owned, output, runner)
         isolation()
         results['passed'] = True
     except Exception:
@@ -447,9 +491,8 @@ def test_candidate(candidate_path, output):
         for spec in reversed(owned):
             if not absent(spec['name']):
                 discard(spec)
-        authority = directory / 'test-authority'
-        if authority.exists():
-            run(['gpgconf', '--homedir', authority, '--kill', 'gpg-agent'])
+        if memory_mounted:
+            run(['umount', directory])
         shutil.rmtree(directory)
     write_json(output, results)
     sign(output)

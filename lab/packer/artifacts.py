@@ -18,7 +18,7 @@ STATE = ROOT / "lab/state/packer"
 RESULTS = ROOT / "lab/results/packer"
 CREDENTIALS = Path(os.environ.get("AUTONOMOUS_IMAGE_TRUST_DIR", str(ROOT / "lab/credentials/artifact-signing"))).resolve()
 GIB = 1024**3
-PROFILES = ("os", "server", "agent")
+PROFILES = ("os", "node")
 VERSIONS = {"rocky": "9.8", "rke2": "v1.37.1+rke2r1", "packer": "1.15.3", "qemu_plugin": "1.1.4", "cni": "flannel"}
 
 

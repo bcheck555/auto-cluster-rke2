@@ -164,7 +164,7 @@ class ProfileTests(unittest.TestCase):
             runner.assert_not_called()
 
     def test_service_route_is_scoped_to_disposable_smoke_metadata(self):
-        for smoke in (None, {'smoke': True}):
+        for smoke in (None, {'smoke': True}, {'formation_smoke': True}):
             with tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 spec = runtime.make_spec('image-test-server', '192.168.250.241', 'server', root)
@@ -173,7 +173,8 @@ class ProfileTests(unittest.TestCase):
                     runtime.prepare_seed(spec, 'operator-key', smoke=smoke)
                 network = json.loads((root / 'image-test-server-seed/network-config').read_text())
                 routes = network['ethernets']['rke2lab0'].get('routes', [])
-                self.assertEqual(routes, [{'to': '10.43.0.0/16', 'via': '0.0.0.0'}] if smoke else [])
+                self.assertEqual(routes, [{'to': '10.43.0.0/16', 'via': '0.0.0.0'}]
+                                 if smoke and not smoke.get('formation_smoke') else [])
                 self.assertFalse(any(r.get('to') in ('default', '0.0.0.0/0') for r in routes))
 
     def test_libvirt_ipv6_filter_normalization(self):
@@ -215,12 +216,12 @@ class ProfileTests(unittest.TestCase):
             'rke2_units': {role: {'enabled': 'masked', 'active': 'inactive'} for role in ('server', 'agent')},
             'cloud_init': {'status': 'done'}, 'addresses': [{'addr_info': [{'local': spec['address']}]}],
             'routes': [], 'pings': {'1.1.1.1': 1}, 'cluster_state_absent': True,
-            'packages': {'firewalld': True, 'rke2-server': profile == 'server', 'rke2-agent': profile == 'agent',
+            'packages': {'firewalld': True, 'rke2-server': profile in ('server', 'node'), 'rke2-agent': profile in ('agent', 'node'),
                          'rke2-selinux': profile != 'os'}}
         return spec, report
 
     def test_profile_firewall_and_service_policy(self):
-        for profile in ('os', 'server', 'agent'):
+        for profile in ('os', 'server', 'agent', 'node'):
             spec, report = self.report(profile)
             runtime.validate_report(spec, report, 'operator-key')
             report['firewalld_enabled'] = 'masked'

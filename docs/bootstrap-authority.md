@@ -1,5 +1,10 @@
 # Authenticated discovery and bootstrap authority
 
+Historical external-authority prototype, retained as library/test reference.
+The [universal node service](universal-node.md) performs discovery and enrollment
+inside the nodes, with Kubernetes/etcd admission serialization. This daemon,
+its external CA, and manual grants are not required by the current architecture.
+
 The Go packages now implement a local file-backed authority, signed HTTPS
 discovery, mutual-TLS grant APIs, and clients. No authority daemon, CA, trust
 anchor, network route, host service, or guest configuration has been deployed.

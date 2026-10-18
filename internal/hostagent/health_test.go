@@ -125,6 +125,36 @@ func TestHealthRequiresIndependentEtcdAndImmutableClusterIdentity(t *testing.T) 
 	}
 }
 
+func TestHealthWaitsForRuntimeRoleLabels(t *testing.T) {
+	f := healthSetup(t)
+	f.role = "agent" // kubelet registered, RKE2 has not applied server labels yet
+	if _, err := f.checker.Check(context.Background(), f.plan, f.host, true); err != ErrWaiting {
+		t.Fatal("delayed server labels must wait", err)
+	}
+	if f.markerWrites != 0 {
+		t.Fatal("unconfirmed server created cluster identity")
+	}
+	f.role = "server"
+	if _, err := f.checker.Check(context.Background(), f.plan, f.host, true); err != nil {
+		t.Fatal("server did not converge after labels appeared", err)
+	}
+}
+
+func TestHealthWaitsForEtcdLearnerPromotion(t *testing.T) {
+	f := healthSetup(t)
+	f.learner = true
+	if _, err := f.checker.Check(context.Background(), f.plan, f.host, true); err != ErrWaiting {
+		t.Fatal("joining learner must wait for promotion", err)
+	}
+	if f.markerWrites != 0 {
+		t.Fatal("learner created cluster identity")
+	}
+	f.learner = false
+	if _, err := f.checker.Check(context.Background(), f.plan, f.host, true); err != nil {
+		t.Fatal("promoted voter did not converge", err)
+	}
+}
+
 func TestHealthRejectsMissingIdentityWrongMembershipAndUnreadyNodes(t *testing.T) {
 	for _, kind := range []string{"missing-marker", "unready-node", "wrong-role", "wrong-etcd-member", "learner", "not-three-voters"} {
 		t.Run(kind, func(t *testing.T) {

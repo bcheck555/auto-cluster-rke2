@@ -62,7 +62,7 @@ def seed_for_build(input_path, work):
     seed.mkdir()
     payload = seed / "payload"
     payload.mkdir()
-    for directory in ("keys", "rpms", "runtime"):
+    for directory in ("keys", "rpms", "runtime", "node"):
         shutil.copytree(root / directory, payload / directory, copy_function=copy_link)
     shutil.copyfile(root / "recipe/lab/packer/guest.py", payload / "guest.py")
     metadata = {key: manifest[key] for key in ("versions", "packages", "validation_image")}
@@ -87,7 +87,8 @@ def build(input_path, output):
     required = ('source/rocky.qcow2', 'tools/packer', 'keys/rocky.key', 'keys/rancher.key',
                 'rpms/repodata/repomd.xml', 'runtime/rke2-images-core.linux-amd64.tar.zst',
                 'runtime/rke2-images-flannel.linux-amd64.tar.zst', 'runtime/validation-workload.tar',
-                'recipe/lab/packer/guest.py', 'recipe/lab/packer/image.pkr.hcl', 'recipe/lab/packer/offline.py')
+                'recipe/lab/packer/guest.py', 'recipe/lab/packer/image.pkr.hcl', 'recipe/lab/packer/offline.py',
+                'node/host-agent', 'node/host-agent.service')
     if any(name not in manifest['files'] for name in required):
         raise ImageError('input bundle missing required offline payloads')
     if not re.fullmatch(r'docker.io/library/busybox@sha256:[0-9a-f]{64}', manifest.get('validation_image', '')):
@@ -175,7 +176,7 @@ def publish(input_path, output):
     if candidate.get("kind") != "candidate":
         raise ImageError("publication requires a signed candidate")
     if set(candidate.get('profiles', {})) != set(PROFILES):
-        raise ImageError('candidate must contain exactly three compatible profiles')
+        raise ImageError('candidate must contain OS base and universal node profiles')
     for profile in PROFILES:
         pin = candidate['profiles'][profile]
         if pin.get('firewalld') != ('active' if profile == 'os' else 'disabled'):
@@ -189,6 +190,8 @@ def publish(input_path, output):
     report = json.loads(test_path.read_text())
     if report.get("passed") is not True or report.get("candidate_sha256") != digest(input_path):
         raise ImageError("successful validation does not bind this candidate")
+    if report.get('formation', {}).get('passed') is not True or report['formation'].get('same_image_sha256') != candidate['profiles']['node']['sha256']:
+        raise ImageError('universal node formation validation missing or for another image')
     output = Path(output).resolve()
     if output.exists():
         raise ImageError("release destination already exists")
@@ -209,3 +212,36 @@ def publish(input_path, output):
     sign(output / "release.json")
     os.chmod(output / 'release.json', 0o644)
     print("published signed release: " + str(output / "release.json"), flush=True)
+
+
+def export(input_path, output):
+    """Export the verified universal disk for physical-host imaging; never touch a device."""
+    input_path, output = Path(input_path).resolve(), Path(output).absolute()
+    release = verify_manifest(input_path)
+    if release.get('kind') != 'release' or 'node' not in release.get('profiles', {}):
+        raise ImageError('raw export requires a published universal node release')
+    pin = release['profiles']['node']
+    if release['files'].get(pin['file']) != {'sha256': pin['sha256'], 'size': pin['size']}:
+        raise ImageError('node profile differs from signed inventory')
+    image = relative_file(input_path.parent, pin['file'])
+    info = json.loads(run(['qemu-img', 'info', '--output=json', image]))
+    if info['format'] != 'qcow2' or info.get('backing-filename') or info['virtual-size'] != 32 * GIB:
+        raise ImageError('node disk is not a standalone supported image')
+    if output.exists() or output.is_symlink():
+        raise ImageError('export destination already exists')
+    preflight(extra_disk=info['virtual-size'])
+    output.mkdir(mode=0o755)
+    raw = output / 'node.raw'
+    run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', image, raw])
+    exported = json.loads(run(['qemu-img', 'info', '--output=json', raw]))
+    if exported['format'] != 'raw' or exported['virtual-size'] != info['virtual-size']:
+        raise ImageError('exported raw geometry differs')
+    run(['qemu-img', 'compare', '-f', 'qcow2', '-F', 'raw', image, raw])
+    shutil.copyfile(input_path, output / 'source-release.json')
+    shutil.copyfile(str(input_path) + '.sig', output / 'source-release.json.sig')
+    manifest = {'schema': 1, 'kind': 'raw-node', 'source_release_sha256': digest(input_path),
+                'source_node_sha256': pin['sha256'], 'virtual_size': info['virtual-size'],
+                'files': inventory(output)}
+    write_json(output / 'export.json', manifest)
+    sign(output / 'export.json')
+    print('signed universal raw disk: ' + str(output / 'export.json'), flush=True)

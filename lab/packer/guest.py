@@ -63,7 +63,7 @@ spec:
 
 
 def install(profile):
-    assert profile in ("os", "server", "agent")
+    assert profile in ("os", "node")
     payload = Path("/mnt/packer/payload")
     manifest = json.loads((payload / "input-metadata.json").read_text())
     command(["systemctl", "mask", "rke2-server.service", "rke2-agent.service"])
@@ -83,9 +83,32 @@ def install(profile):
         for source in (payload / "runtime").iterdir():
             if source.name.endswith((".tar.zst", ".tar")):
                 shutil.copyfile(source, images / source.name)
-        write("/etc/rancher/rke2/config.yaml", "selinux: true\n" + ("cni: flannel\n" if profile == "server" else ""))
+        write("/etc/rancher/rke2/config.yaml", "selinux: true\ncni: flannel\n")
         write("/etc/NetworkManager/conf.d/rke2-flannel.conf",
               "[keyfile]\nunmanaged-devices=interface-name:flannel*;interface-name:cni*;interface-name:veth*\n", 0o644)
+    if profile == 'node':
+        binary = Path('/usr/local/libexec/autonomous-rke2/host-agent')
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(payload / 'node/host-agent', binary)
+        binary.chmod(0o755)
+        write('/etc/systemd/system/autonomous-rke2-host-agent.service',
+              (payload / 'node/host-agent.service').read_text(), 0o644)
+        def sha(path):
+            digest = hashlib.sha256()
+            with path.open('rb') as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b''):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        settings = {'StateDirectory': '/var/lib/autonomous-rke2',
+                    'SecretFile': '/etc/autonomous-rke2/enrollment-secret',
+                    'Interface': '', 'BootstrapDelaySeconds': 30,
+                    'CoreImageSHA256': sha(images / 'rke2-images-core.linux-amd64.tar.zst'),
+                    'FlannelImageSHA256': sha(images / 'rke2-images-flannel.linux-amd64.tar.zst'),
+                    'CoreDNSSHA256': sha(OFFLINE / 'coredns-config.yaml')}
+        write(CONFIG / 'node.json', json.dumps(settings, indent=2), 0o644)
+        command(['systemctl', 'daemon-reload'])
+        command(['systemctl', 'enable', 'autonomous-rke2-host-agent.service'])
+        command(['restorecon', '-RF', str(binary.parent)])
     for service in ("nm-cloud-setup.service", "nm-cloud-setup.timer", "dnf-makecache.timer"):
         command(["systemctl", "disable", "--now", service], check=False)
     # Image consumers use the retained local repository; no public repo is enabled.
@@ -141,7 +164,9 @@ def check_seal():
     for service in ("rke2-server", "rke2-agent"):
         assert command(["systemctl", "is-active", service], check=False).stdout.strip() != "active"
         assert command(["systemctl", "is-enabled", service], check=False).stdout.strip() == "masked"
-    forbidden = [CONFIG / "instance.json", Path("/var/lib/autonomous-rke2/host-id")]
+    forbidden = [CONFIG / "instance.json", CONFIG / 'enrollment-secret',
+                 *[Path('/var/lib/autonomous-rke2') / name for name in
+                   ('host-id', 'identity', 'formation', 'journal', 'credentials')]]
     if any(path.exists() for path in forbidden) or not cluster_state_absent():
         raise RuntimeError("image contains instance/cluster state")
 
@@ -225,7 +250,7 @@ def smoke(instance, image):
     if marker.exists() and marker.read_text() != grant["nonce"]:
         raise RuntimeError("test grant differs from initialized test state")
     write(marker, grant["nonce"])
-    role = image["profile"]
+    role = instance.get('runtime_role') if image['profile'] == 'node' else image['profile']
     if role not in ("server", "agent"):
         raise RuntimeError("OS baseline may not bootstrap RKE2")
     token = (CONFIG / "test-token").read_text().strip()
@@ -290,12 +315,16 @@ spec:
     if role != "server":
         wait_until(lambda: command(["systemctl", "is-active", "rke2-agent"], check=False).stdout.strip() == "active")
         return {"service": "active"}
+    return workload_checks(instance, image, 2, instance['name'], instance['agent_name'])
+
+
+def workload_checks(instance, image, expected_nodes, server_name, agent_name):
     def ready():
         p = kubectl(["get", "nodes", "-o", "json"], check=False)
         if p.returncode:
             return False
         nodes = json.loads(p.stdout)["items"]
-        return len(nodes) == 2 and all(any(c["type"] == "Ready" and c["status"] == "True" for c in n["status"]["conditions"]) for n in nodes)
+        return len(nodes) == expected_nodes and all(any(c["type"] == "Ready" and c["status"] == "True" for c in n["status"]["conditions"]) for n in nodes)
     wait_until(ready)
     # CoreDNS and the CNI must be ready before workload DNS/connectivity probes.
     def system_ready():
@@ -307,8 +336,8 @@ spec:
     workload = image["validation_image"]
     namespace = "image-validation"
     resources = [{"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": namespace}}]
-    for name, host, args in (("http", instance["name"], ["sh", "-c", "mkdir -p /www; echo image-ok >/www/index.html; exec httpd -f -p 8080 -h /www"]),
-                             ("client", instance["agent_name"], ["sleep", "3600"])):
+    for name, host, args in (("http", server_name, ["sh", "-c", "mkdir -p /www; echo image-ok >/www/index.html; exec httpd -f -p 8080 -h /www"]),
+                             ("client", agent_name, ["sleep", "3600"])):
         resources.append({"apiVersion": "v1", "kind": "Pod", "metadata": {"name": name, "namespace": namespace, "labels": {"app": name}},
             "spec": {"nodeName": host, "containers": [{"name": name, "image": workload, "imagePullPolicy": "Never", "command": args}]}})
     resources.append({"apiVersion": "v1", "kind": "Service", "metadata": {"name": "http", "namespace": namespace},
@@ -338,8 +367,43 @@ spec:
     if not corefiles or any(re.search(r'(?m)^\s*forward\s', text) for text in corefiles):
         raise RuntimeError('CoreDNS has external forwarding or no Corefile')
     cluster_uid = json.loads(kubectl(['get', 'namespace', 'kube-system', '-o', 'json']).stdout)['metadata']['uid']
-    return {"nodes_ready": 2, "dns": True, "cross_node_service": True, "cross_node_pod": True,
+    return {"nodes_ready": expected_nodes, "dns": True, "cross_node_service": True, "cross_node_pod": True,
             "system_pods": True, 'cluster_uid': cluster_uid, 'external_dns_forwarding': False}
+
+
+def formation_smoke(instance, image):
+    """Observe the baked service; never assign roles, tokens, or native units."""
+    if image['profile'] != 'node':
+        raise RuntimeError('formation requires universal node image')
+    executable = '/usr/local/libexec/autonomous-rke2/host-agent'
+    observed = {}
+    def healthy():
+        result = command([executable, '-health'], check=False, timeout=35)
+        if result.returncode:
+            return False
+        observed.update(json.loads(result.stdout))
+        return True
+    wait_until(healthy, timeout=900)
+    role = observed['Role']
+    if command(['systemctl', 'is-active', 'autonomous-rke2-host-agent']).stdout.strip() != 'active':
+        raise RuntimeError('formation service inactive')
+    other = 'agent' if role == 'server' else 'server'
+    if command(['systemctl', 'is-enabled', 'rke2-' + other], check=False).stdout.strip() != 'masked':
+        raise RuntimeError('opposite runtime role unmasked')
+    ctr = ['/var/lib/rancher/rke2/bin/ctr', '--address', '/run/k3s/containerd/containerd.sock', '--namespace', 'k8s.io']
+    command([*ctr, 'images', 'tag', '--force', 'docker.io/library/busybox:1.37.0', image['validation_image']])
+    result = {'formation': observed}
+    if role == 'server':
+        nodes = json.loads(kubectl(['get', 'nodes', '-o', 'json']).stdout)['items']
+        result['nodes_ready'] = sum(any(c['type'] == 'Ready' and c['status'] == 'True'
+                                   for c in n['status'].get('conditions', [])) for n in nodes)
+        marker = json.loads(kubectl(['-n', 'kube-system', 'get', 'configmap', 'autonomous-rke2-identity', '-o', 'json']).stdout)['data']
+        if len(nodes) == 4 and marker['bootstrapHostID'] == observed['HostID']:
+            catalog = json.loads(json.loads(kubectl(['-n', 'kube-system', 'get', 'configmap', 'autonomous-rke2-membership', '-o', 'json']).stdout)['data']['catalog'])
+            members = catalog['Members']
+            worker = next(m['NodeName'] for m in members.values() if m['Role'] == 'agent')
+            result.update(workload_checks(instance, image, 4, members[observed['HostID']]['NodeName'], worker))
+    return result
 
 
 def report():
@@ -350,7 +414,9 @@ def report():
         errors.append('deployment profile differs from image policy')
     smoke_result = None
     try:
-        if instance.get("smoke"):
+        if instance.get('formation_smoke'):
+            smoke_result = formation_smoke(instance, image)
+        elif instance.get("smoke"):
             smoke_result = smoke(instance, image)
         if image["profile"] == "os":
             command(["firewall-cmd", "--reload"])

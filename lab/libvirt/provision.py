@@ -162,7 +162,7 @@ def verify_derived_image(image: dict[str, Any]) -> dict[str, Any]:
         if release['files'].get(pin['file']) != {'sha256': pin['sha256'], 'size': pin['size']}:
             raise LabError('release profile differs from signed file inventory')
         expected = 'active' if profile == 'os' else 'disabled'
-        if profile not in ('os', 'server', 'agent') or pin['firewalld'] != expected:
+        if profile not in ('os', 'server', 'agent', 'node') or pin['firewalld'] != expected:
             raise LabError('release profile firewalld policy invalid')
         if image.get('firewalld', expected) != expected:
             raise LabError('deployment cannot override profile firewalld policy')
@@ -335,8 +335,10 @@ def build_plan(
         if address.version != 4 or address not in subnet or address in (subnet.network_address, subnet.broadcast_address):
             raise LabError(f"nodes[{index}].address must be a usable address in {subnet}")
         role = node.get("role")
-        if role not in {"server", "agent"}:
-            raise LabError(f"nodes[{index}].role must be server or agent")
+        if role not in {"server", "agent", "auto"}:
+            raise LabError(f"nodes[{index}].role must be server, agent, or auto")
+        if role == 'auto' and image.get('profile') != 'node':
+            raise LabError('automatic role selection requires universal node image')
         vcpus = _positive_int(node.get("vcpus"), f"nodes[{index}].vcpus")
         memory_mib = _positive_int(node.get("memory_mib"), f"nodes[{index}].memory_mib")
         disk_gib = _positive_int(node.get("disk_gib"), f"nodes[{index}].disk_gib")
@@ -357,7 +359,9 @@ def build_plan(
                 "firewalld": "active" if image["profile"] == "os" else "disabled"} if image.get("kind") == "derived" else {}),
         })
         if image.get('kind') == 'derived':
-            if image['profile'] != 'os' and role != image['profile']:
+            if image['profile'] == 'node' and role != 'auto':
+                raise LabError('universal node image determines its role at boot; use auto')
+            if image['profile'] not in ('os', 'node') and role != image['profile']:
                 raise LabError('node role does not match derived image profile')
             if node.get('profile', image['profile']) != image['profile'] or node.get('release_sha256', image['release_sha256']) != image['release_sha256']:
                 raise LabError('node profile/release differs from immutable deployment pin')

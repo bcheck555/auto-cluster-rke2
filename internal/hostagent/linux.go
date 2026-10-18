@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -26,14 +27,15 @@ const offlineCoreDNS = "/opt/autonomous-rke2/offline/coredns-config.yaml"
 // LinuxRuntime operates only on the preinstalled, pinned offline image. It
 // never invokes a package manager, downloads an installer, or deletes RKE2 data.
 type LinuxRuntime struct {
-	root    string
-	command func(context.Context, string, ...string) ([]byte, error)
-	Health  *HealthChecker
-	network func(Plan) error
+	root             string
+	command          func(context.Context, string, ...string) ([]byte, error)
+	Health           *HealthChecker
+	network          func(Plan) error
+	flannelInterface func(Plan) (string, error)
 }
 
 func NewLinuxRuntime(health *HealthChecker) *LinuxRuntime {
-	return &LinuxRuntime{root: "/", command: runCommand, Health: health, network: checkNetwork}
+	return &LinuxRuntime{root: "/", command: runCommand, Health: health, network: checkNetwork, flannelInterface: flannelUplink}
 }
 
 func checkNetwork(p Plan) error {
@@ -55,6 +57,92 @@ func checkNetwork(p Plan) error {
 }
 func (r *LinuxRuntime) path(path string) string {
 	return filepath.Join(r.root, strings.TrimPrefix(path, "/"))
+}
+
+// Existing refuses adoption of an unjournaled runtime, including either role.
+func (r *LinuxRuntime) Existing(ctx context.Context) (bool, error) {
+	for _, role := range []string{"server", "agent"} {
+		active, _ := r.system(ctx, "is-active", role)
+		if active == "active" || active == "activating" || active == "deactivating" {
+			return true, nil
+		}
+	}
+	return r.hasData()
+}
+
+// Kube-proxy OUTPUT DNAT needs an initial route lookup even on an isolated
+// subnet with no default gateway. Own only the fixed service-CIDR route, with
+// a distinct metric; never change a default route or install external routes.
+func (r *LinuxRuntime) EnsureNetwork(ctx context.Context, p Plan) error {
+	if p.Validate() != nil {
+		return ErrInvalid
+	}
+	if r.network != nil {
+		if err := r.network(p); err != nil {
+			return err
+		}
+	}
+	_, err := r.command(ctx, "/usr/sbin/ip", "route", "replace", "10.43.0.0/16", "dev", p.Interface, "scope", "link", "metric", "42760")
+	if err != nil {
+		return ErrWaiting
+	}
+	return nil
+}
+
+// RPMs ship empty datastore/snapshotter directories. Files, devices and links
+// are state; directory presence alone must not make a sealed image unusable.
+func (r *LinuxRuntime) hasData() (bool, error) {
+	for _, path := range []string{"/var/lib/rancher/rke2/server/db", "/var/lib/rancher/rke2/server/tls", "/var/lib/rancher/rke2/server/token", "/var/lib/rancher/rke2/agent/client-kubelet.crt", "/var/lib/rancher/rke2/agent/containerd"} {
+		found := false
+		err := filepath.WalkDir(r.path(path), func(_ string, entry fs.DirEntry, err error) error {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if !entry.IsDir() {
+				found = true
+				return filepath.SkipAll
+			}
+			return nil
+		})
+		if err != nil {
+			return false, ErrReconcile
+		}
+		if found {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (r *LinuxRuntime) requiredData(role string) bool {
+	regular := func(path string) bool {
+		info, err := os.Lstat(r.path(path))
+		return err == nil && info.Mode().IsRegular() && info.Size() > 0
+	}
+	if role == "agent" {
+		return regular("/var/lib/rancher/rke2/agent/client-kubelet.crt") && regular("/var/lib/rancher/rke2/agent/client-kubelet.key")
+	}
+	if role != "server" || !regular("/var/lib/rancher/rke2/server/db/etcd/member/snap/db") {
+		return false
+	}
+	wal := "/var/lib/rancher/rke2/server/db/etcd/member/wal"
+	info, err := os.Lstat(r.path(wal))
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	entries, err := os.ReadDir(r.path(wal))
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".wal") && regular(filepath.Join(wal, entry.Name())) {
+			return true
+		}
+	}
+	return false
 }
 
 type boundedOutput struct{ bytes.Buffer }
@@ -125,7 +213,7 @@ func (r *LinuxRuntime) tokenDigest(p Plan) (string, error) {
 		}
 		prefix := "server:"
 		if p.Role == bootstrap.RoleAgent {
-			prefix = "agent:"
+			prefix = "node:"
 		}
 		if !strings.HasPrefix(token[69:], prefix) || len(strings.TrimPrefix(token[69:], prefix)) < 32 {
 			return "", ErrInvalid
@@ -163,7 +251,14 @@ func (r *LinuxRuntime) desired(p Plan, host string) (map[string][]byte, error) {
 			return nil, ErrReconcile
 		}
 		files[manifests+"rke2-coredns-config.yaml"] = core
-		chart := map[string]any{"apiVersion": "helm.cattle.io/v1", "kind": "HelmChartConfig", "metadata": map[string]string{"name": "rke2-flannel", "namespace": "kube-system"}, "spec": map[string]string{"valuesContent": "flannel:\n  backend: vxlan\n  args:\n    - --ip-masq\n    - --kube-subnet-mgr\n    - --iface=" + p.Interface + "\nnetpol:\n  enabled: false\n"}}
+		iface := "--iface=" + p.Interface
+		if r.flannelInterface != nil {
+			iface, err = r.flannelInterface(p)
+			if err != nil {
+				return nil, err
+			}
+		}
+		chart := map[string]any{"apiVersion": "helm.cattle.io/v1", "kind": "HelmChartConfig", "metadata": map[string]string{"name": "rke2-flannel", "namespace": "kube-system"}, "spec": map[string]string{"valuesContent": "flannel:\n  backend: vxlan\n  args:\n    - --ip-masq\n    - --kube-subnet-mgr\n    - " + iface + "\nnetpol:\n  enabled: false\n"}}
 		files[manifests+"rke2-flannel-config.yaml"], _ = json.MarshalIndent(chart, "", "  ")
 	}
 	return files, nil
@@ -267,13 +362,11 @@ func (r *LinuxRuntime) Inspect(ctx context.Context, p Plan, host string) (Snapsh
 		return snapshot, ErrReconcile
 	}
 	snapshot.Running = active == "active" || active == "activating"
-	for _, path := range []string{"/var/lib/rancher/rke2/server/db", "/var/lib/rancher/rke2/agent/client-kubelet.crt"} {
-		if _, err := os.Lstat(r.path(path)); err == nil {
-			snapshot.HasData = true
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return snapshot, ErrReconcile
-		}
+	snapshot.HasData, err = r.hasData()
+	if err != nil {
+		return snapshot, err
 	}
+	snapshot.DataIntact = r.requiredData(p.Role)
 	if entries, err := os.ReadDir(r.path(configPath + ".d")); err == nil && len(entries) > 0 {
 		return snapshot, ErrReconcile
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -289,7 +382,7 @@ func (r *LinuxRuntime) Inspect(ctx context.Context, p Plan, host string) (Snapsh
 		}
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
-			if line != "" && !strings.HasPrefix(line, "#") && line != "RKE2_SELINUX=true" && line != "RKE2_SELINUX=\"true\"" {
+			if line != "" && !strings.HasPrefix(line, "#") && line != "HOME=/root" && line != "RKE2_SELINUX=true" && line != "RKE2_SELINUX=\"true\"" {
 				return snapshot, ErrReconcile
 			}
 		}
@@ -390,6 +483,12 @@ func (r *LinuxRuntime) Start(ctx context.Context, role string) error {
 
 func (r *LinuxRuntime) Check(ctx context.Context, p Plan, host string, initialize bool) (Evidence, error) {
 	if r.Health == nil {
+		return Evidence{}, ErrWaiting
+	}
+	// A returning Kubernetes Node can retain its previous Ready condition while
+	// local RKE2/containerd are still starting. RKE2's notify unit must finish.
+	active, err := r.system(ctx, "is-active", p.Role)
+	if err != nil || active != "active" {
 		return Evidence{}, ErrWaiting
 	}
 	return r.Health.Check(ctx, p, host, initialize)

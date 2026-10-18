@@ -23,6 +23,7 @@ type Remote interface {
 type Snapshot struct {
 	Running          bool
 	HasData          bool
+	DataIntact       bool
 	ConfigMatches    bool
 	CredentialDigest string
 }

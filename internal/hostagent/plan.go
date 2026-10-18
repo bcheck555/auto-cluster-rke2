@@ -33,8 +33,8 @@ type Plan struct {
 	NodeName           string
 	NodeIP             string
 	Interface          string
-	RegistrationURL    string // operator-managed stable origin on port 9345
-	APIURL             string // same stable hostname, port 6443
+	RegistrationURL    string // discovered native supervisor origin, port 9345
+	APIURL             string // local health proxy or legacy stable API origin
 	TokenFile          string
 	AgentTokenFile     string // bootstrap server's separate worker secret
 	CoreImageSHA256    string
@@ -65,7 +65,9 @@ func (p Plan) Validate() error {
 	}
 	r, _ := url.Parse(p.RegistrationURL)
 	a, _ := url.Parse(p.APIURL)
-	if r.Port() != "9345" || a.Port() != "6443" || r.Hostname() != a.Hostname() {
+	registrationIP := net.ParseIP(r.Hostname())
+	local := a.Hostname() == "127.0.0.1" && a.Port() == "7443" && r.Port() == "9345" && registrationIP != nil && registrationIP.To4() != nil && !registrationIP.IsLoopback() && !registrationIP.IsUnspecified() && !registrationIP.IsMulticast()
+	if !local && (r.Port() != "9345" || a.Port() != "6443" || r.Hostname() != a.Hostname()) {
 		return ErrInvalid
 	}
 	for _, path := range []string{p.TokenFile, p.AgentTokenFile} {
@@ -97,7 +99,7 @@ func (p Plan) RenderConfig(host string) ([]byte, error) {
 		config["server"] = p.RegistrationURL
 	}
 	if p.Role == bootstrap.RoleServer {
-		u, _ := url.Parse(p.RegistrationURL)
+		u, _ := url.Parse(p.APIURL)
 		config["cni"] = "flannel"
 		config["advertise-address"] = p.NodeIP
 		config["cluster-cidr"] = "10.42.0.0/16"

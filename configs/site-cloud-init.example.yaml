@@ -1,0 +1,10 @@
+#cloud-config
+# Merge with local hostname/network settings. Use the SAME random secret on
+# every node of this deployment. Generic image publishing never includes it.
+write_files:
+  - path: /etc/autonomous-rke2/enrollment-secret
+    owner: root:root
+    permissions: '0600'
+    content: 'REPLACE_WITH_ONE_COMMON_64_CHARACTER_RANDOM_HEX_SECRET'
+runcmd:
+  - [systemctl, restart, --no-block, autonomous-rke2-host-agent.service]

@@ -1,33 +1,37 @@
-# Host and membership state-machine contract
+# Node formation states
 
-This file defines required behavior before daemon implementation. All transitions must be persisted atomically with a monotonically increasing operation revision and stable operation ID; restart resumes by inspecting real system state, never by replaying destructive commands blindly.
+Every node uses one local `formation` operation. Its cluster, host identity,
+deployment fingerprint and runtime policy remain fixed across revisions.
 
-## Host-agent states
+| State | Durable meaning | Allowed next action |
+| --- | --- | --- |
+| Discovering | No cluster selected; no runtime data allowed | Probe authenticated peers; wait for pending cluster or startup grace |
+| Selected | Cluster UUID and bootstrap/join intent persisted | Resume same intent; generate or request credentials |
+| Credentialed | Fixed role and private credentials established | Validate image and prepare exact pinned configuration |
+| Configured | Configuration and credential digest persisted | Persist Starting before native service start |
+| Starting | Native start may already have happened | Resume service; observe real Kubernetes and etcd readiness |
+| Healthy | Recorded Node/etcd identities and completed membership | Restart same role/data on reboot; verify identity and health |
 
-`Uninitialized -> IdentityReady -> AwaitingAuthority -> BootstrapAuthorized | JoinAuthorized -> Installing -> Configured -> Starting -> Healthy`
+Discovery runs alongside convergence. Selecting a cluster immediately makes
+it visible as pending; pending is never enrollment readiness. An existing
+selection always prevents fresh bootstrap even when discovery is empty.
 
-- `Uninitialized -> IdentityReady`: generate one persistent host key/identity and unique machine identity; concurrent invocations converge on the same atomic record.
-- `IdentityReady -> AwaitingAuthority`: discover endpoint hints, then authenticate authority. No hint, timeout, or unreachable cluster is not authorization to bootstrap.
-- `AwaitingAuthority -> BootstrapAuthorized`: accept a valid, unexpired, single-use grant bound to host identity, requested cluster UUID, policy revision, and operation ID.
-- `AwaitingAuthority -> JoinAuthorized`: verify signed cluster identity and receive role-scoped join authorization.
-- `* -> Interrupted`: record failure/reboot without erasing progress; on restart, inspect package, config, systemd, local RKE2 data, API identity, and membership before resuming.
-- `Healthy -> ReconcileRequired`: observed cluster UUID or membership differs; freeze role-changing/destructive work pending authority decision.
+The first healthy server creates an immutable cluster marker and initializes
+the replicated membership ledger. Joiners reserve one role and later complete
+that reservation only after independently observed Node readiness and, for
+servers, voting etcd membership. Server reservations include the bootstrap
+member in the three-server limit. Only one initial member may be pending.
 
-## Membership operation states
+Crash boundaries are resumable: credential files may precede their journal
+revision; a start may succeed before its caller returns; an enrollment response
+may be lost after CAS. Retrying uses the original identity and reservation.
+No time-based reservation expiry, role reassignment, or alternate bootstrap
+is allowed. The responding server's native registration origin is journaled
+with credentials and remains fixed across restarts. RKE2 maintains its native
+client load balancer; saved public server endpoints also feed the API health proxy.
 
-`Observed -> SuspectedFailure -> QuorumVerified -> ReplacementAuthorized -> FenceRequested -> FenceConfirmed -> MemberRemovalAuthorized -> OldMemberRemoved -> CandidatePrepared -> ServerJoining -> EtcdSynced -> Healthy -> Audited`
-
-At every transition persist evidence (timestamps, observations, cluster UUID, member IDs, actor/grant ID, and result). `FenceConfirmed` requires authenticated evidence of power-off from the fencing backend; timeout or network isolation is not equivalent. Any quorum ambiguity, unavailable control plane, cluster identity mismatch, or failed fence transitions to `HaltedNeedsOperator`. No data directory cleanup is a transition in the initial design.
-
-## Returning old node
-
-A recovered host authenticates with its persistent identity and reports its old cluster UUID/member identity. If the member was removed/replaced, it must not start as an independent server from stale state. Controller/authority select a documented reconciliation path; ambiguous local etcd state halts for operator intervention. Never create a second etcd member based only on hostname.
-
-## Invariants
-
-1. At most one bootstrap grant for a given cluster-authority epoch is consumed.
-2. No automatic cluster creation because discovery/API fails.
-3. No destructive membership action without verified quorum and positive fence confirmation.
-4. Never alter/delete etcd data as a generic retry.
-5. Every transition is idempotent, auditable, and resumes from inspected state.
-6. Desired count is policy, not permission to bypass quorum/fencing.
+Missing data after Healthy, changed credential digests, changed host/interface/
+address/deployment/runtime policy, or changed Node/etcd IDs require
+reconciliation. Same-data native restarts are allowed. Failed health or missing
+quorum withdraws enrollment readiness. The agent never deletes data, resets
+quorum, removes members, promotes workers, or invokes fencing.

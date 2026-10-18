@@ -1,5 +1,11 @@
 # Durable identity and operation storage
 
+The universal node stores its identity in `identity/`, the `formation` operation
+in `formation/`, and private credentials in `credentials/`, beneath
+`/var/lib/autonomous-rke2`. It reuses the storage primitives below. The
+authority-backed `journal/` layout is legacy and is refused during automatic
+migration. See [current formation states](state-machine.md).
+
 `identity.NewFileStore(absoluteDirectory)` implements `identity.Store`.
 `state.NewFileJournal(absoluteDirectory)` implements `state.Journal`. Constructors
 perform no I/O; methods return storage errors. These are local Linux filesystem

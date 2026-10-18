@@ -23,7 +23,7 @@ def main(argv=None):
     bundle = sub.add_parser("bundle", help="verify and package an existing signed input generation")
     bundle.add_argument("--lock", type=Path, required=True)
     bundle.add_argument("--output", type=Path, required=True)
-    for name in ("build", "test", "publish"):
+    for name in ("build", "test", "publish", "export"):
         command = sub.add_parser(name)
         command.add_argument("--input", type=Path, required=True)
         command.add_argument("--output", type=Path, required=True)

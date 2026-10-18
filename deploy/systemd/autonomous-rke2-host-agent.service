@@ -1,13 +1,14 @@
 [Unit]
-Description=Authorized offline RKE2 host convergence
+Description=Self-forming offline RKE2 node
 Wants=network-online.target
-After=network-online.target
-ConditionPathExists=/etc/autonomous-rke2/host.json
+After=network-online.target cloud-config.service
+ConditionPathExists=/etc/autonomous-rke2/node.json
+ConditionPathExists=/etc/autonomous-rke2/enrollment-secret
 
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/libexec/autonomous-rke2/host-agent -config /etc/autonomous-rke2/host.json
+ExecStart=/usr/local/libexec/autonomous-rke2/host-agent -config /etc/autonomous-rke2/node.json
 Restart=on-failure
 RestartPreventExitStatus=2
 RestartSec=15s
@@ -24,9 +25,9 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
-ReadWritePaths=/var/lib/autonomous-rke2 /etc/rancher/rke2 /var/lib/rancher/rke2
+ReadWritePaths=/var/lib/autonomous-rke2 /etc/rancher/rke2 /var/lib/rancher/rke2 /etc/systemd/system
 
 [Install]
 WantedBy=multi-user.target

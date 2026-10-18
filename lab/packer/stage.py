@@ -153,9 +153,8 @@ for role in ('server','agent'):
     versions = [l.strip() for l in output.splitlines() if '1.37.1' in l and 'rke2r1' in l]
     if len(versions) != 1: raise RuntimeError('pinned RKE2 RPM unavailable or ambiguous: '+repr(versions))
     roles[role] = versions[0]
-packages = {'os':[query(p) for p in common],**{r:[p] for r,p in roles.items()}}
-for role in ('server','agent'):
-    subprocess.run(['dnf','download','--resolve','--alldeps','--destdir=/out/rpms',*packages['os'],*packages[role]],check=True)
+packages = {'os':[query(p) for p in common], 'node':[roles['server'],roles['agent']]}
+subprocess.run(['dnf','download','--resolve','--alldeps','--destdir=/out/rpms',*packages['os'],*packages['node']],check=True)
 pathlib.Path('/out/packages.json').write_text(json.dumps(packages,indent=2))
 rpms = sorted(str(p) for p in pathlib.Path('/out/rpms').glob('*.rpm'))
 subprocess.run(['rpm','--dbpath','/tmp/verification','--initdb'],check=True)
@@ -191,6 +190,7 @@ createrepo_c /out/rpms
     for path in (ROOT / "lab/packer").glob("*"):
         if path.suffix in {".py", ".hcl"}:
             shutil.copyfile(path, recipe / path.name)
+    stage_node(destination)
     manifest = {"schema": 1, "kind": "input", "versions": VERSIONS, "vendor_fingerprints": keys,
         "source_image_sha256": config["image"]["sha256"], "staging_container": image_pin,
         "packages": json.loads((destination / "packages.json").read_text()),
@@ -210,7 +210,7 @@ def rebind_recipe(source, destination):
         raise ImageError("cached lock is not a matching input generation")
     destination.mkdir(parents=True, mode=0o700, exist_ok=False)
     for name in manifest["files"]:
-        if name.startswith("recipe/"):
+        if name.startswith(("recipe/", "node/")) or name == 'packages.json':
             continue
         target = destination / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -223,12 +223,38 @@ def rebind_recipe(source, destination):
     for path in (ROOT / "lab/packer").glob("*"):
         if path.suffix in {".py", ".hcl"}:
             shutil.copyfile(path, recipe / path.name)
+    packages = manifest['packages']
+    if 'node' not in packages:
+        packages = {'os': packages['os'], 'node': packages['server'] + packages['agent']}
+    manifest['packages'] = {name: packages[name] for name in ('os', 'node')}
+    write_json(destination / 'packages.json', manifest['packages'])
+    stage_node(destination)
     manifest["parent_input_sha256"] = digest(source)
     manifest['validation_image'] = workload_reference(destination / 'runtime/validation-workload.tar')
     manifest["files"] = inventory(destination)
     write_json(destination / "input.json", manifest)
     sign(destination / "input.json")
     print("signed input recipe generation: " + str(destination / "input.json"), flush=True)
+
+
+def stage_node(destination):
+    """Compile before sealing the input bundle; offline Packer needs no Go toolchain."""
+    target = Path(destination) / 'node'
+    target.mkdir()
+    environment = os.environ.copy()
+    environment.update({'CGO_ENABLED': '0', 'GOOS': 'linux', 'GOARCH': 'amd64'})
+    run(['go', 'build', '-trimpath', '-o', target / 'host-agent', './cmd/host-agent'], cwd=ROOT, env=environment)
+    shutil.copyfile(ROOT / 'deploy/systemd/autonomous-rke2-host-agent.service', target / 'host-agent.service')
+    # Bundle reviewed sources alongside the binary for reproducibility/provenance.
+    sources = target / 'source'
+    for directory in ('cmd/host-agent', 'internal'):
+        for source in (ROOT / directory).rglob('*.go'):
+            output = sources / source.relative_to(ROOT)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, output)
+    for name in ('go.mod', 'go.sum'):
+        if (ROOT / name).is_file():
+            shutil.copyfile(ROOT / name, sources / name)
 
 
 def workload_reference(path):
