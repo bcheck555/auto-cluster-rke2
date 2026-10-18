@@ -1,0 +1,55 @@
+# Copy to clusters/dev.yaml, then edit for your deployment. Commit real YAML
+# configs if desired: this file contains public settings only, never secrets.
+# The paired secrets file is always the same basename: clusters/dev.env.
+# Neither create nor destroy overwrites or deletes either input file.
+# Templates end in .example and do not reserve names/subnets during validation.
+schema: 1
+
+# Stable identity: selects autonomous-rke2-dev storage, bridge and filter.
+# Use a different identity for each independent cluster. To retire or rename
+# a deployment, destroy it using its old identity before changing this value.
+cluster: dev
+
+# Stable role-neutral hostnames: dev-node01, dev-node02, etc. Maximum 61 chars.
+hostname_prefix: dev-node
+
+# Signed universal release.json. Relative paths resolve from THIS YAML file's
+# directory, not the shell's working directory. The same disk serves every role.
+release: ../lab/artifacts/packer/release-universal-20261017/release.json
+
+# Currently supported: 3 = three servers; 4 = three servers plus one worker.
+# Role assignment is automatic; per-node roles/seed addresses are not inputs.
+nodes: 3
+
+# Seconds to wait for each node's independent health check. A failed create can
+# be resumed with the same config. CLI --timeout may override this wait only.
+health_timeout: 1200
+
+# Per-VM resources, identical across this lab. All three keys are optional.
+# Changing them on a saved deployment requires destroy followed by create.
+vm:
+  vcpus: 4          # Integer 2..256; default 4.
+  memory_mib: 8192  # Integer 4096..1048576; default 8192 (8 GiB).
+  disk_gib: 60     # Integer 32..4096; default 60. Independent sparse QCOW2 disk.
+
+network:
+  # A NEW isolated libvirt network owned by this cluster. No external forwarding.
+  # Defaults to autonomous-rke2-<cluster> if omitted. Existing networks are not
+  # repurposed. Use a unique name for every cluster.
+  name: dev-private
+
+  # Required in YAML: explicit RFC1918 IPv4 subnet, /28 or larger.
+  # Hypervisor = network address +1; nodes = +11, +12, +13, optionally +14.
+  # Check all host/libvirt/Kubernetes/VPN ranges before choosing this value.
+  # This range is only an example; --plan reports local conflicts.
+  subnet: 192.168.100.0/24
+
+  # Additional site Kubernetes pod/service CIDRs, VPNs, and future reservations
+  # not visible in host routing tables. Repeat list entries as needed.
+  # Image Kubernetes ranges 10.42.0.0/16 and 10.43.0.0/16 are always reserved.
+  # Every .yaml/.yml in this folder reserves its cluster/name/subnet, even when
+  # its VMs are stopped or destroyed. Move/remove obsolete configs manually.
+  reserved_cidrs: []
+  # reserved_cidrs:
+  #   - 10.244.0.0/16
+  #   - 172.20.0.0/16

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from lab.libvirt import lifecycle as life
@@ -29,6 +30,7 @@ class FakeHost:
         self.fail_stop = None
         self.fail_undefine = None
         self.fail_settings = None
+        self.disk_sizes = {}
 
     def inventory(self):
         return {'domains': dict(self.domains), 'running': set(self.running),
@@ -117,9 +119,9 @@ class FakeHost:
         if args[:2] == ['qemu-img', 'convert']:
             Path(args[-1]).write_bytes(b'fresh standalone disk')
         elif args[:2] == ['qemu-img', 'resize']:
-            pass
+            self.disk_sizes[args[2].removesuffix('.tmp')] = int(args[3].removesuffix('G')) * life.GIB
         elif args[:2] == ['qemu-img', 'info']:
-            return json.dumps({'format': 'qcow2', 'virtual-size': 60 * life.GIB})
+            return json.dumps({'format': 'qcow2', 'virtual-size': self.disk_sizes.get(args[-1], 60 * life.GIB)})
         elif args[0] == 'genisoimage':
             target = Path(args[args.index('-output') + 1])
             assert target.stat().st_mode & 0o777 == 0o600
@@ -480,6 +482,92 @@ class LifecycleTests(unittest.TestCase):
         self.lab = life.Lab(self.pool)
         self.create()
         self.assertEqual(set(self.host.domains), set(life.NAMES[:3]))
+
+    def test_yaml_cli_resources_and_secret_used_and_all_inputs_preserved_by_destroy(self):
+        path = self.pool.parent / 'dev.yaml'
+        env = path.with_suffix('.env')
+        data = {'schema': 1, 'cluster': 'dev', 'release': str(self.release), 'nodes': 3,
+                'network': {'subnet': '192.168.100.0/24'},
+                'vm': {'vcpus': 2, 'memory_mib': 4096, 'disk_gib': 64}}
+        path.write_text(json.dumps(data))
+        env.write_text('ENROLLMENT_SECRET=' + 'a' * 64 + '\n')
+        env.chmod(0o600)
+        loaded = life.load_config(path)
+        self.lab = life.Lab(self.pool, **loaded.options, input_files=(path, env))
+        manifest = {'kind': 'release', 'profiles': {'node': {}}, 'files': {'node.qcow2': {}}}
+        original_stat = life.os.fstat
+        def root_stat(fd):
+            info = original_stat(fd)
+            return SimpleNamespace(**{key: (0 if key == 'st_uid' else getattr(info, key))
+                                      for key in dir(info) if key.startswith('st_')})
+        def firmware(source, target):
+            Path(target).write_bytes(b'fresh firmware')
+        with patch.object(life, 'Lab', return_value=self.lab), \
+                patch.object(life.os, 'geteuid', return_value=0), \
+                patch.object(life.os, 'fstat', side_effect=root_stat), \
+                patch.object(life.shutil, 'which', return_value='/fixture/tool'), \
+                patch.object(life.shutil, 'copyfile', side_effect=firmware), \
+                patch.object(life.Path, 'is_file', return_value=True), \
+                patch.object(life, 'verify_manifest', return_value=manifest), \
+                patch.object(self.lab, 'check_capacity'), \
+                patch.object(life, 'operation_lock', side_effect=contextlib.nullcontext):
+            self.assertEqual(life.main('create', ['--config', str(path)]), 0)
+            state = json.loads(self.lab.state_path.read_text())
+            self.assertEqual(state['secret'], 'a' * 64)
+            xml = self.host.domains['rke2-dev-node01']
+            self.assertEqual(xml.findtext('vcpu'), '2')
+            self.assertEqual(xml.findtext('memory'), str(4096 * 1024))
+            self.assertEqual(state['nodes'][0]['disk_gib'], 64)
+            self.assertEqual(path.read_text(), json.dumps(data))
+            self.assertEqual(env.read_text(), 'ENROLLMENT_SECRET=' + 'a' * 64 + '\n')
+            # Desired replacement settings may change before cleanup; destroy
+            # uses saved ownership and does not require/read valid secrets.
+            data['network']['subnet'] = '192.168.101.0/24'
+            path.write_text(json.dumps(data))
+            env.write_text('manually changed private input\n')
+            yaml_before, env_before = path.read_bytes(), env.read_bytes()
+            self.assertEqual(life.main('destroy', ['--config', str(path), '--confirm-cluster', 'dev']), 0)
+        self.assertFalse(self.pool.exists())
+        self.assertEqual(path.read_bytes(), yaml_before)
+        self.assertEqual(env.read_bytes(), env_before)
+
+    def test_user_yaml_or_env_in_runtime_directory_prevents_any_teardown(self):
+        self.create()
+        for name in ('user.yaml', 'user.env'):
+            path = self.pool / name
+            path.write_text('user-owned input')
+            before = list(self.host.calls)
+            with self.assertRaisesRegex(life.ImageError, 'move it outside'):
+                self.lab.destroy(self.host.inventory())
+            self.assertEqual(before, self.host.calls)
+            self.assertEqual(path.read_text(), 'user-owned input')
+            path.unlink()  # Simulate the user's manual move, not script cleanup.
+
+    def test_changed_env_secret_rejected_without_resetting_state(self):
+        self.lab.enrollment_secret = 'a' * 64
+        self.create()
+        before = self.lab.state_path.read_bytes()
+        self.lab.enrollment_secret = 'b' * 64
+        with self.assertRaisesRegex(life.ImageError, 'ENROLLMENT_SECRET differs') as raised:
+            self.create()
+        self.assertNotIn('a' * 64, str(raised.exception))
+        self.assertNotIn('b' * 64, str(raised.exception))
+        self.assertEqual(self.lab.state_path.read_bytes(), before)
+
+    def test_init_secrets_cli_creates_no_infrastructure_and_never_overwrites(self):
+        path = self.pool.parent / 'dev.yaml'
+        path.write_text(json.dumps({'schema': 1, 'cluster': 'dev', 'release': str(self.release),
+                                    'nodes': 3, 'network': {'subnet': '192.168.100.0/24'}}))
+        loaded = life.load_config(path)
+        self.lab = life.Lab(self.pool, **loaded.options, input_files=(path, loaded.env_path))
+        with patch.object(life, 'Lab', return_value=self.lab), patch.object(life.os, 'geteuid', return_value=0):
+            self.assertEqual(life.main('create', ['--config', str(path), '--init-secrets']), 0)
+            env_before = loaded.env_path.read_bytes()
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(life.main('create', ['--config', str(path), '--init-secrets']), 1)
+            self.assertEqual(loaded.env_path.read_bytes(), env_before)
+        self.assertFalse(self.pool.exists())
+        self.assertFalse(self.host.calls)
 
 
 if __name__ == '__main__':

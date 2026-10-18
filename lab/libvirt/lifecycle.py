@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import re
@@ -17,6 +18,7 @@ from lab.packer.artifacts import (
 )
 from lab.packer.runtime import FILTER, NETWORK, domain_xml, make_spec
 from lab.libvirt.settings import Settings
+from lab.libvirt.cluster_config import init_env, load_config, read_env
 
 BRIDGE = 'virbr-rke2'
 NAMES = tuple(f'rke2-node{i:02}' for i in range(1, 5))
@@ -51,12 +53,14 @@ def write_private(path, content):
 
 class Lab:
     def __init__(self, pool=None, *, cluster='lab', hostname_prefix=None, network=None,
-                 subnet=None, reserved_cidrs=None):
+                 subnet=None, reserved_cidrs=None, vm=None, enrollment_secret=None, input_files=()):
         self.options = dict(cluster=cluster, hostname_prefix=hostname_prefix, network=network,
-                            subnet=subnet, reserved_cidrs=reserved_cidrs)
+                            subnet=subnet, reserved_cidrs=reserved_cidrs, vm=vm)
         self.settings = Settings(**self.options)
         self.pool = Path(pool) if pool is not None else self.settings.pool
         self.state_path = self.pool / 'universal-lab.json'
+        self.enrollment_secret = enrollment_secret
+        self.input_files = tuple(Path(path).resolve() for path in input_files)
 
     @property
     def names(self):
@@ -91,12 +95,20 @@ class Lab:
         if self.pool.is_symlink() or self.pool.resolve() != self.pool.absolute():
             raise ImageError('lab disk directory or a parent is a symlink; refusing')
         if self.pool.exists():
-            for directory, children, _ in os.walk(self.pool, followlinks=False):
+            for directory, children, files in os.walk(self.pool, followlinks=False):
                 if os.path.ismount(directory) or any(
                     os.path.ismount(Path(directory) / child) for child in children
                 ):
                     raise ImageError('mount inside lab disk directory; unmount it before retrying')
+                if any(Path(name).suffix in ('.yaml', '.yml', '.env')
+                       and Path(directory) / name != self.pool / 'admin.yaml' for name in files):
+                    raise ImageError('YAML/.env input found inside generated lab directory; move it outside before cleanup')
         saved = json.loads(self.state_path.read_text()) if self.state_path.exists() else None
+        if saved is not None and not isinstance(saved, dict):
+            raise ImageError('invalid saved deployment state; refusing')
+        for path in (*self.input_files, *((saved or {}).get('input_files', []))):
+            if self.inside(path):
+                raise ImageError('cluster config/.env is inside generated lab directory; move it outside before cleanup')
         self.settings = Settings(**self.options, saved=saved)
         for name, xml in inventory['domains'].items():
             paths = [node.get('file') for node in xml.findall('.//disk//source')]
@@ -217,6 +229,8 @@ class Lab:
             state = json.loads(self.state_path.read_text())
             if (state.get('schema'), state.get('release_sha256'), state.get('count')) != (1, release_hash, count):
                 raise ImageError('existing deployment uses a different release/node count; destroy it first')
+            if self.enrollment_secret is not None and not hmac.compare_digest(state['secret'], self.enrollment_secret):
+                raise ImageError('ENROLLMENT_SECRET differs from saved deployment; restore it or recreate the cluster')
             self.deployment_names(count)
             for index, spec in enumerate(state['nodes']):
                 for key, suffix in (('disk', '.qcow2'), ('nvram', '.vars.fd'),
@@ -238,10 +252,13 @@ class Lab:
             os.chmod(self.pool, 0o711)
             state = {'schema': 1, 'release': str(release), 'release_sha256': release_hash,
                      'configuration': self.settings.document(),
-                     'count': count, 'secret': secrets.token_hex(32), 'nodes': [
+                     'count': count, 'secret': self.enrollment_secret or secrets.token_hex(32), 'nodes': [
                          {**make_spec(self.names[i], self.settings.address(i), 'node', self.pool),
                           'network': self.settings.network, 'filter': self.settings.filter,
-                          'disk_gib': 60, 'boot_requested': False} for i in range(count)]}
+                          **self.settings.vm, 'boot_requested': False} for i in range(count)]}
+            self.save(state)
+        if self.input_files:
+            state['input_files'] = list(map(str, self.input_files))
             self.save(state)
         for name, xml in inventory['domains'].items():
             if name in self.owned_names:
@@ -262,13 +279,15 @@ class Lab:
         names = self.deployment_names(count)
         new_disks = sum(not (self.pool / (name + '.qcow2')).exists() for name in names)
         parent = self.pool if self.pool.exists() else self.pool.parent
-        if shutil.disk_usage(parent).free < (60 * new_disks + 8) * GIB:
-            raise ImageError('insufficient disk space: reserve 60 GiB per new disk plus 8 GiB')
+        disk_gib = self.settings.vm['disk_gib']
+        memory_mib = self.settings.vm['memory_mib']
+        if shutil.disk_usage(parent).free < (disk_gib * new_disks + 8) * GIB:
+            raise ImageError(f'insufficient disk space: reserve {disk_gib} GiB per new disk plus 8 GiB')
         available = next(int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
                          if line.startswith('MemAvailable:'))
         starting = sum(name not in inventory['running'] for name in names)
-        if available < (8 * starting + 8) * GIB:
-            raise ImageError('insufficient available RAM: 8 GiB per stopped/new VM plus 8 GiB host reserve')
+        if available < (memory_mib * starting + 8192) * 1024**2:
+            raise ImageError(f'insufficient available RAM: {memory_mib} MiB per stopped/new VM plus 8 GiB host reserve')
 
     def check_networks(self, inventory):
         if not self.settings.resuming:
@@ -329,12 +348,12 @@ class Lab:
         if not disk.exists():
             temporary = disk.with_suffix('.qcow2.tmp')
             command(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'qcow2', image, temporary], timeout=1800)
-            command(['qemu-img', 'resize', temporary, '60G'])
+            command(['qemu-img', 'resize', temporary, str(spec['disk_gib']) + 'G'])
             os.chmod(temporary, 0o600)
             temporary.replace(disk)
         info = json.loads(command(['qemu-img', 'info', '--output=json', disk]))
-        if info.get('format') != 'qcow2' or info.get('backing-filename') or info.get('virtual-size') != 60 * GIB:
-            raise ImageError(f'{name}: expected standalone 60 GiB QCOW2 disk; refusing to modify it')
+        if info.get('format') != 'qcow2' or info.get('backing-filename') or info.get('virtual-size') != spec['disk_gib'] * GIB:
+            raise ImageError(f'{name}: expected standalone {spec["disk_gib"]} GiB QCOW2 disk; refusing to modify it')
         if not nvram.exists():
             temporary = nvram.with_suffix('.fd.tmp')
             shutil.copyfile('/usr/share/OVMF/OVMF_VARS_4M.fd', temporary)
@@ -459,22 +478,46 @@ def main(operation, argv=None):
         'Create/resume the universal-image lab on local qemu:///system.' if operation == 'create'
         else 'Permanently delete the local lab, including disks and settings. Safe to retry.'))
     parser.add_argument('--plan', action='store_true', help='inspect ownership and print targets without changes')
-    parser.add_argument('--cluster', default='lab', help='cluster identity; scopes disks and all libvirt resources (default: lab)')
+    parser.add_argument('--config', type=Path, help='cluster YAML; reads the paired <basename>.env on create')
+    parser.add_argument('--cluster', help='cluster identity; scopes disks and all libvirt resources (default: lab)')
     parser.add_argument('--hostname-prefix', help='base hostname, e.g. dev-node produces dev-node01; saved on first create')
     parser.add_argument('--network', help='name of the isolated libvirt network to create; saved on first create')
     parser.add_argument('--subnet', help='private IPv4 node subnet, e.g. 192.168.100.0/24; otherwise choose an unused /24')
     parser.add_argument('--reserved-cidr', action='append', help='additional Kubernetes/VPN/network range to avoid; repeatable')
     if operation == 'create':
-        parser.add_argument('--release', type=Path, default=DEFAULT_RELEASE, help='signed release.json')
-        parser.add_argument('--nodes', type=int, choices=(3, 4), default=3, help='3 servers, optionally a fourth worker')
-        parser.add_argument('--timeout', type=int, default=1200, help='health wait seconds per node (default: 1200)')
+        parser.add_argument('--release', type=Path, help='signed release.json')
+        parser.add_argument('--nodes', type=int, choices=(3, 4), help='3 servers, optionally a fourth worker')
+        parser.add_argument('--timeout', type=int, help='health wait seconds per node (default: 1200)')
+        parser.add_argument('--init-secrets', action='store_true', help='create missing paired .env only; never overwrite it or create VMs')
     else:
         parser.add_argument('--confirm-cluster', help='must match --cluster for actual deletion')
         parser.add_argument('--confirm-lab', help='legacy confirmation: must match the selected storage pool name')
     args = parser.parse_args(argv)
     try:
-        lab = Lab(cluster=args.cluster, hostname_prefix=args.hostname_prefix, network=args.network,
-                  subnet=args.subnet, reserved_cidrs=args.reserved_cidr)
+        config = None
+        if args.config:
+            overrides = (args.cluster, args.hostname_prefix, args.network, args.subnet, args.reserved_cidr)
+            if operation == 'create':
+                overrides += (args.release, args.nodes)
+            if any(value is not None for value in overrides):
+                raise ImageError('--config cannot be combined with deployment overrides; edit the YAML instead')
+            config = load_config(args.config, check_siblings=operation == 'create')
+            options = config.options
+            args.cluster = config.cluster
+            if operation == 'create':
+                args.release, args.nodes = config.release, config.nodes
+                args.timeout = args.timeout if args.timeout is not None else config.timeout
+        else:
+            args.cluster = args.cluster or 'lab'
+            options = dict(cluster=args.cluster, hostname_prefix=args.hostname_prefix,
+                           network=args.network, subnet=args.subnet, reserved_cidrs=args.reserved_cidr)
+            if operation == 'create':
+                args.release, args.nodes = args.release or DEFAULT_RELEASE, args.nodes or 3
+                args.timeout = args.timeout if args.timeout is not None else 1200
+        lab = Lab(**options, input_files=(config.path, config.env_path) if config else ())
+        if config and operation == 'destroy' and lab.state_path.exists():
+            # YAML may describe the desired replacement. Clean up the saved deployment.
+            lab.options = dict(cluster=args.cluster)
         if not args.plan and os.geteuid() != 0:
             raise ImageError('run this script using sudo python3; no interactive root shell is needed')
         if (operation == 'destroy' and not args.plan
@@ -482,6 +525,18 @@ def main(operation, argv=None):
             raise ImageError(f'deletion requires --confirm-cluster {args.cluster}')
         if operation == 'create' and args.timeout <= 0:
             raise ImageError('--timeout must be positive')
+        if operation == 'create' and args.init_secrets:
+            if config is None or args.plan:
+                raise ImageError('--init-secrets requires --config and cannot be combined with --plan')
+            existing_secret = None
+            if lab.state_path.exists():
+                saved = json.loads(lab.state_path.read_text())
+                Settings(**lab.options, saved=saved)
+                existing_secret = saved['secret']
+            init_env(config.env_path, enrollment_secret=existing_secret)
+            return 0
+        if config and operation == 'create' and not args.plan:
+            lab.enrollment_secret = read_env(config.env_path)
         required = ['virsh', 'ip']
         if operation == 'create' and not args.plan:
             required += ['qemu-img', 'qemu-system-x86_64', 'genisoimage', 'ssh', 'ssh-keygen', 'gpgv']
@@ -492,6 +547,8 @@ def main(operation, argv=None):
             if not shutil.which(tool):
                 raise ImageError('required command missing: ' + tool)
         if args.plan:
+            if config:
+                print(f'Config: {config.path}; private inputs: {config.env_path}')
             inventory = lab.inventory()
             lab.check_ownership(inventory)
             if operation == 'create':

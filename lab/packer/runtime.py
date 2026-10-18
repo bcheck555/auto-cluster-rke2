@@ -134,9 +134,9 @@ def domain_xml(spec):
         return node
     element(root, 'name', spec['name'])
     element(root, 'uuid', spec['uuid'])
-    element(root, 'memory', '8388608', unit='KiB')
-    element(root, 'currentMemory', '8388608', unit='KiB')
-    element(root, 'vcpu', '4', placement='static')
+    element(root, 'memory', str(spec.get('memory_mib', 8192) * 1024), unit='KiB')
+    element(root, 'currentMemory', str(spec.get('memory_mib', 8192) * 1024), unit='KiB')
+    element(root, 'vcpu', str(spec.get('vcpus', 4)), placement='static')
     system = element(root, 'os')
     element(system, 'type', 'hvm', arch='x86_64', machine='q35')
     element(system, 'loader', '/usr/share/OVMF/OVMF_CODE_4M.fd', readonly='yes', type='pflash')

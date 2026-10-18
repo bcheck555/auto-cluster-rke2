@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+*.env
+!clusters/*.env.example
 *.key
 *.pem
 *.token

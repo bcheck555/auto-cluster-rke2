@@ -28,164 +28,164 @@ acceptance. See [artifacts and validation results](docs/universal-image-results.
 Physical hardware validation remains pending. [Previous lab evidence](docs/offline-image-results.md)
 describes the earlier separate-role images, not acceptance of the universal image.
 
-## TL;DR: destroy or create the local VM lab
+## TL;DR: cluster configs and private inputs
 
-Run these scripts from your normal SSH shell. Each `sudo python3` invocation
-exits back to that shell on success or failure; no interactive root shell,
-exported variables, or pasted shell settings are needed. Commands target only
-local `qemu:///system` on the hypervisor.
+Keep one public YAML and one private `.env` per cluster under `clusters/`.
+Committed, commented templates:
 
-If you used the earlier pasted runbook, reconnect SSH first to clear any
-`set -e`/`set -u` settings left in that shell. Those settings can close a shell
-when a command fails; these scripts never enable them.
+- [cluster.yaml.example](clusters/cluster.yaml.example): identity, release,
+  hostnames, node count, VM resources, subnet and additional reservations.
+- [cluster.env.example](clusters/cluster.env.example): private-input format,
+  permissions, initialization and enrollment-secret lifecycle.
+
+Real YAML configs can be committed. Real `*.env` files are Git-ignored.
+**Create and destroy never overwrite or delete either input file.** Only you
+decide when to edit, move, rotate, or delete them. `--init-secrets` is an explicit
+initialization action that creates an absent `.env` and refuses to overwrite one.
+
+Run commands from your normal SSH shell. If you used the old pasted runbook,
+reconnect SSH first to clear its `set -e`/`set -u` settings. The scripts change
+no shell settings and always target local `qemu:///system`.
 
 ```bash
 cd /home/checkb/repos/github/auto-cluster
-
-# Inspect cleanup targets without changing anything.
-sudo python3 lab/libvirt/destroy.py --plan
-
-# PERMANENTLY DELETE lab workloads, disks, NVRAM, seeds, credentials and settings.
-sudo python3 lab/libvirt/destroy.py --confirm-lab autonomous-rke2-lab
+cp -n clusters/cluster.yaml.example clusters/dev.yaml
+# Edit dev.yaml: select a unique cluster, hostname prefix, network and subnet.
+# The template describes dev; change these fields for additional clusters.
+sudo python3 lab/libvirt/create.py --config clusters/dev.yaml --plan
 ```
 
-Back up needed data before destroying. Teardown handles partial deployments,
-missing definitions, orphaned files, inactive pools/networks, and repeated runs.
-It deletes `/var/lib/libvirt/images/autonomous-rke2-lab` including retained old
-generations and rollback copies, plus the lab's VM/network/pool/filter
-definitions and empty leftover bridge. It refuses cleanup if unrelated VMs use
-these resources, ownership differs, or mounts remain inside the disk directory.
-Published images, repository signing/SSH keys, and unrelated VMs remain intact.
-Remove or replace any old kubeconfig you copied outside the lab directory.
-
-After destroy succeeds, create a fresh three-server cluster:
+Initialize the private file **once**, after reviewing the YAML. This creates
+`clusters/dev.env` as root with mode `0600`, without creating any VMs. If the
+selected cluster already has saved runtime state, it adopts that deployment's
+enrollment key instead of generating a replacement. Existing files are refused;
+edit them manually when needed. The `.env` template documents manual setup too.
 
 ```bash
-sudo python3 lab/libvirt/create.py
+sudo python3 lab/libvirt/create.py --config clusters/dev.yaml --init-secrets
 ```
 
-For three servers **and a fourth worker**, use this command instead:
+Create the cluster, or resume it after a failed run or host reboot:
 
 ```bash
-sudo python3 lab/libvirt/create.py --nodes 4
+sudo python3 lab/libvirt/create.py --config clusters/dev.yaml
 ```
 
-For multiple clusters, select a stable `--cluster` identity. Each gets separate
-VMs, storage pool/directory, bridge, network, IPv6 filter, enrollment secret,
-SSH credentials, and kubeconfig. Customize the hostname prefix, libvirt network
-name, and node subnet on first creation:
+Inspect and permanently remove its generated resources:
 
 ```bash
-sudo python3 lab/libvirt/create.py --cluster dev \
-  --hostname-prefix dev-node --network dev-private --subnet 192.168.100.0/24 --plan
-sudo python3 lab/libvirt/create.py --cluster dev \
-  --hostname-prefix dev-node --network dev-private --subnet 192.168.100.0/24
-
-# Another independent cluster; allocate an unused private /24 automatically.
-sudo python3 lab/libvirt/create.py --cluster qa --hostname-prefix qa-node --nodes 4
-
-# Saved names, network and subnet are inherited when resuming.
-sudo python3 lab/libvirt/create.py --cluster dev
-
-# Destroy only dev, including its disks and settings. Leave qa intact.
-sudo python3 lab/libvirt/destroy.py --cluster dev --plan
-sudo python3 lab/libvirt/destroy.py --cluster dev --confirm-cluster dev
+sudo python3 lab/libvirt/destroy.py --config clusters/dev.yaml --plan
+sudo python3 lab/libvirt/destroy.py --config clusters/dev.yaml --confirm-cluster dev
 ```
 
-`--hostname-prefix dev-node` produces `dev-node01` through `dev-node04`.
-Without a prefix, a named cluster uses `rke2-CLUSTER-node01` through `04`.
-`--network` names a **new isolated libvirt network managed by this cluster**;
-the script never attaches to or repurposes someone else's network. Cluster
-names scope storage under `/var/lib/libvirt/images/autonomous-rke2-CLUSTER`.
-The default `--cluster lab` retains the original lab paths and naming.
+**Destroy deletes workloads, VM disks, NVRAM, cloud-init seeds, generated SSH
+keys, kubeconfig and runtime state. Back up needed data first.** The public YAML
+and private `.env` remain unchanged. Recreating the cluster reuses their values,
+including the enrollment secret. Runtime copies of the key disappear with the
+generated resources. There is no option to purge the source files.
 
-Before creating resources, the script checks active and inactive libvirt
-network subnets/routes, host IPv4 addresses and routes in all routing tables,
-and this image's Kubernetes pod/service CIDRs (`10.42.0.0/16`, `10.43.0.0/16`).
-Node subnets must be private IPv4 ranges, `/28` or larger, with no overlap in
-either direction. Existing VM/network/bridge/pool/filter name collisions also
-stop creation. If `--subnet` is omitted, an unused private `/24` is selected
-and saved. Resuming checks again and refuses newly introduced conflicts rather
-than changing the cluster's addresses.
+Destroy does not require a readable or valid `.env`. It uses saved runtime
+ownership when YAML already describes a replacement. Partial deployments,
+missing definitions, inactive pools/networks, orphaned files, and repeated
+teardown are supported. Unrelated VMs/resources are protected. YAML/`.env`
+inputs found inside generated disk directories stop cleanup before VM changes;
+move those inputs out manually. Keep input files in `clusters/` or another
+dedicated configuration directory.
 
-Remote Kubernetes/VPN ranges absent from the hypervisor's configuration cannot
-be discovered from local routes. Supply those explicitly, including the full
-pod and service CIDRs, using repeatable `--reserved-cidr` options on first
-creation:
+## Config and network validation
+
+YAML mode requires PyYAML in the Python interpreter used by `sudo`; see
+[lab/requirements.txt](lab/requirements.txt). This host already has it. Relative
+release paths resolve from the YAML file's directory. Unknown fields, duplicate
+keys, aliases, unsafe YAML tags and invalid types are rejected. With `--config`,
+edit deployment settings in YAML; deployment flags cannot override them.
+`--timeout SECONDS` can override the operational health wait.
+
+The paired filename is automatic: `qa.yaml` or `qa.yml` uses `qa.env`.
+Actual create requires a regular, root-owned, mode `0600` `.env`, without
+symlinks. Only literal `ENROLLMENT_SECRET=<64 hex characters>` and full-line
+comments are accepted; optional paired quotes around the key are allowed.
+No shell evaluation, expansion, exports, inline comments, or unknown variables
+are accepted. Values are not printed. A changed key is rejected for a saved
+deployment; restore the key or destroy and recreate intentionally.
+
+Each cluster gets separate VM names, pool/directory, bridge, network, filter,
+credentials and kubeconfig. `--hostname-prefix dev-node` (or its YAML field)
+produces `dev-node01` through `dev-node04`. Names stay independent of roles.
+Automatic worker promotion remains future work.
+
+Every real `.yaml`/`.yml` in the selected config's folder reserves its cluster
+identity, hostname prefix, network and node subnet, including stopped or
+destroyed clusters. Reservations also include peer configs' explicit reserved
+CIDRs. Templates ending in `.example` are excluded. Retire obsolete configs
+manually when you want to release those reservations. Keep cluster YAML files
+together for these checks; arbitrary other folders are not scanned.
+
+Create also checks active/inactive libvirt network subnets and routes, host
+IPv4 addresses and routes in all routing tables, and image Kubernetes ranges
+`10.42.0.0/16` (pods) and `10.43.0.0/16` (services). Overlap in either direction
+or resource-name collisions stops creation before provisioning. Add remote
+Kubernetes/VPN ranges invisible to the host to `network.reserved_cidrs`.
+
+YAML requires an explicit private IPv4 node subnet, `/28` or larger. Hypervisor
+management uses subnet address +1; nodes use +11, +12, +13 and optionally +14.
+The selected mask is written to every seed. Networks are isolated without
+external forwarding. Their internal Kubernetes CIDRs can be reused in separate
+isolated clusters; routing pods/services between clusters needs additional
+support for configurable Kubernetes CIDRs.
+
+## Operation and prerequisites
+
+Default resources per VM are 4 vCPUs, 8192 MiB RAM and a standalone 60 GiB
+virtual disk; YAML can change them within the documented template limits.
+Host capacity checks reserve each new disk's full size, RAM for stopped/new
+VMs, and an additional 8 GiB of disk and RAM for the host. Requires system
+libvirt/KVM, Python 3, `virsh`, `ip`, `qemu-img`, `qemu-system-x86_64`,
+`genisoimage`, `ssh`, `ssh-keygen`, `gpgv`, repository artifact trust files, and
+`/usr/share/OVMF/{OVMF_CODE_4M.fd,OVMF_VARS_4M.fd}`.
+
+Create verifies the signed release, prepares ordinary deployment seeds, boots
+the first node alone and checks health before each subsequent boot. Three VMs
+produce three servers; four add a worker. No guest Internet access is needed.
+The default release is
+`lab/artifacts/packer/release-universal-20261017/release.json`.
+
+If create fails or is interrupted, resolve its reported error and rerun the
+same config. Disks, identities and secret are preserved. Changing release,
+node count, VM resources or network settings on an existing deployment requires
+recreation. VM autostart stays disabled; rerun create after a host reboot. All
+previously booted voters start before health waits so quorum can recover.
+Both scripts share the existing image/lab operation lock.
+
+For cluster `dev`, generated files live under
+`/var/lib/libvirt/images/autonomous-rke2-dev`. The root-only
+`universal-lab.json` contains saved runtime identity and key copies. Create
+prints node/pod status and saves `admin.yaml` there. For a host Kubernetes client:
 
 ```bash
-sudo python3 lab/libvirt/create.py --cluster staging \
-  --reserved-cidr 10.244.0.0/16 --reserved-cidr 172.20.0.0/16
+sudo kubectl --kubeconfig /var/lib/libvirt/images/autonomous-rke2-dev/admin.yaml get nodes -o wide
 ```
 
-Each isolated cluster reuses the image's internal pod/service CIDRs; the
-networks have no external forwarding. Routing pods/services between clusters
-requires additional support for configurable Kubernetes CIDRs. Only node
-subnets are configurable here.
-
-Default signed release:
-`lab/artifacts/packer/release-universal-20261017/release.json`. To choose another
-universal release, add `--release /absolute/path/to/release.json`. Each node
-requires 8 GiB RAM, 4 vCPUs, and an independent 60 GiB virtual disk. Creation
-requires 8 GiB additional available host RAM and disk reserve; allow 60 GiB free
-disk per new VM. Host prerequisites: running system libvirt/KVM, Python 3,
-`virsh`, `ip`, `qemu-img`, `qemu-system-x86_64`, `genisoimage`, `ssh`,
-`ssh-keygen`, `gpgv`, repository artifact trust files, and
-`/usr/share/OVMF/{OVMF_CODE_4M.fd,OVMF_VARS_4M.fd}`. No guest Internet access is
-required.
-
-Create verifies the signed release, generates fresh identities and one shared
-enrollment secret, prepares disks/seeds, and boots the first node alone. Each
-additional node starts after the previous node passes its health check. Default
-lab nodes are named `rke2-node01` through `rke2-node04`. All hostnames are
-independent of roles; automatic worker promotion is future work.
-Existing scripted deployments retain their saved legacy names when
-resumed, and destroy recognizes both naming schemes. Recreate the lab to adopt
-the neutral names; running nodes are never renamed automatically. The
-isolated network defaults to `192.168.250.0/24` when that range is available.
-The hypervisor gets subnet address +1 for management. The first three nodes use
-addresses +11 through +13; the optional fourth uses +14. The selected subnet
-and gateway are printed before resource creation. Non-`/24` masks are also
-written into the cloud-init seed.
-
-**If create fails or is interrupted, resolve the reported error and rerun the
-same command.** It resumes using saved identities, disks, and secret; it does
-not silently reset a cluster. Health waits default to 1,200 seconds per node;
-override with `--timeout SECONDS`. Use destroy followed by create when you want
-a genuinely fresh cluster. Old manually created leftovers require destroy
-before the first scripted create. Errors retain files and report retry steps.
-
-VM autostart stays disabled. To start this existing cluster after a host reboot,
-rerun the same create command: previously booted nodes start before health
-checks so existing etcd voters can regain quorum. This differs from the
-first-node-alone sequence used for a fresh cluster. Keep the same `--cluster`,
-release and `--nodes` value when resuming. Saved hostname/network/subnet options
-are reused; explicit conflicting options are rejected. Saved deployment state
-and secret reside in the root-only `universal-lab.json` inside the lab disk
-directory. Both scripts share the existing image/lab operation lock.
-
-Create prints node/pod status and saves a root-only admin kubeconfig. For the
-default lab, if a host `kubectl` is installed:
+For diagnostics, substitute the configured first node's IP below:
 
 ```bash
-sudo kubectl --kubeconfig /var/lib/libvirt/images/autonomous-rke2-lab/admin.yaml get nodes -o wide
-```
-
-For named clusters use their storage directory, for example
-`/var/lib/libvirt/images/autonomous-rke2-dev/admin.yaml`. For diagnostics on the
-default lab (substitute the selected cluster's directory and node IP as needed):
-
-```bash
-sudo ssh -i /var/lib/libvirt/images/autonomous-rke2-lab/operator \
-  -o UserKnownHostsFile=/var/lib/libvirt/images/autonomous-rke2-lab/known_hosts \
-  rke2lab@192.168.250.11 \
+sudo ssh -i /var/lib/libvirt/images/autonomous-rke2-dev/operator \
+  -o UserKnownHostsFile=/var/lib/libvirt/images/autonomous-rke2-dev/known_hosts \
+  rke2lab@192.168.100.11 \
   'sudo journalctl -u autonomous-rke2-host-agent.service -n 100 --no-pager'
 ```
 
+CLI-only deployments remain supported through `--cluster`, `--hostname-prefix`,
+`--network`, `--subnet`, `--reserved-cidr`, `--release`, and `--nodes` (see
+`--help`). Without YAML, an omitted subnet selects an unused private `/24`.
+The default `lab` identity retains `/var/lib/libvirt/images/autonomous-rke2-lab`
+and recognizes historical names during resume/cleanup. Existing deployments can
+adopt a matching YAML and initialize its `.env` from saved runtime state.
+
 The old `replace.py` and default lab config target historical separate-role
 images. Use [create.py](lab/libvirt/create.py) and [destroy.py](lab/libvirt/destroy.py)
-for the universal-image lab. Applications and persistent data must be restored
-separately after a fresh deployment.
+for universal-image deployments. Restore applications and persistent data
+separately after recreation.
 
 Development uses the Go version pinned in `go.mod`:
 

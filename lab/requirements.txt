@@ -1,0 +1,2 @@
+# YAML cluster configs; CLI-only deployments retain their standard-library path.
+PyYAML>=6.0,<7

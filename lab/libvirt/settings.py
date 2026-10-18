@@ -12,6 +12,7 @@ from lab.packer.artifacts import ImageError
 
 DEFAULT_SUBNET = '192.168.250.0/24'
 KUBERNETES_CIDRS = ('10.42.0.0/16', '10.43.0.0/16')
+DEFAULT_VM = {'vcpus': 4, 'memory_mib': 8192, 'disk_gib': 60}
 
 
 def ipv4_subnet(value):
@@ -29,8 +30,8 @@ def ipv4_subnet(value):
 
 class Settings:
     def __init__(self, cluster='lab', *, hostname_prefix=None, network=None, subnet=None,
-                 reserved_cidrs=None, saved=None):
-        if not re.fullmatch(r'[a-z][a-z0-9-]{0,30}[a-z0-9]|[a-z]', cluster):
+                 reserved_cidrs=None, vm=None, saved=None):
+        if not isinstance(cluster, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,30}[a-z0-9]|[a-z]', cluster):
             raise ImageError('--cluster must be a lowercase DNS label, at most 32 characters')
         self.cluster = cluster
         if saved is not None and not isinstance(saved, dict):
@@ -53,19 +54,25 @@ class Settings:
             raise ImageError('saved cluster identity differs; refusing')
         defaults = {'hostname_prefix': 'rke2-node' if cluster == 'lab' else f'rke2-{cluster}-node',
                     'network': 'autonomous-rke2-isolated' if cluster == 'lab' else f'autonomous-rke2-{cluster}',
-                    'subnet': None, 'reserved_cidrs': []}
+                    'subnet': None, 'reserved_cidrs': [], 'vm': dict(DEFAULT_VM)}
         requested = {'hostname_prefix': hostname_prefix, 'network': network,
                      'subnet': str(ipv4_subnet(subnet)) if subnet is not None else None,
-                     'reserved_cidrs': list(reserved_cidrs) if reserved_cidrs is not None else None}
+                     'reserved_cidrs': list(reserved_cidrs) if reserved_cidrs is not None else None,
+                     'vm': vm}
         for key, value in requested.items():
-            if previous and value is not None and value != previous.get(key):
+            if previous and value is not None and value != previous.get(key, defaults[key]):
                 raise ImageError(f'saved {key} differs; use the original options or destroy this cluster first')
             setattr(self, key, value if value is not None else (previous or defaults).get(key, defaults[key]))
-        if not re.fullmatch(r'[a-z][a-z0-9-]{0,60}', self.hostname_prefix):
+        if not isinstance(self.hostname_prefix, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,60}', self.hostname_prefix):
             raise ImageError('--hostname-prefix must be a lowercase DNS prefix, at most 61 characters')
-        if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}', self.network):
+        if not isinstance(self.network, str) or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}', self.network):
             raise ImageError('--network must be a libvirt network name, at most 63 characters')
         self.subnet = ipv4_subnet(self.subnet) if self.subnet is not None else None
+        if not isinstance(self.vm, dict) or set(self.vm) != set(DEFAULT_VM):
+            raise ImageError('vm requires vcpus, memory_mib and disk_gib')
+        for key, lower, upper in (('vcpus', 2, 256), ('memory_mib', 4096, 1048576), ('disk_gib', 32, 4096)):
+            if type(self.vm[key]) is not int or not lower <= self.vm[key] <= upper:
+                raise ImageError(f'vm.{key} must be an integer between {lower} and {upper}')
         for value in self.reserved_cidrs:
             try:
                 ipaddress.ip_network(value, strict=True)
@@ -101,7 +108,7 @@ class Settings:
             raise ImageError('select and validate the node subnet before saving deployment settings')
         return {'cluster': self.cluster, 'hostname_prefix': self.hostname_prefix,
                 'network': self.network, 'subnet': str(self.subnet),
-                'reserved_cidrs': self.reserved_cidrs}
+                'reserved_cidrs': self.reserved_cidrs, 'vm': self.vm}
 
     def network_xml(self):
         root = ET.Element('network')
