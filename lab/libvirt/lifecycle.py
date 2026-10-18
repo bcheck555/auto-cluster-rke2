@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import ipaddress
 import json
 import os
 import re
@@ -16,19 +15,15 @@ from pathlib import Path
 from lab.packer.artifacts import (
     GIB, ROOT, ImageError, digest, operation_lock, verify_manifest,
 )
-from lab.packer.runtime import FILTER, NETWORK, POOL, domain_xml, make_spec
+from lab.packer.runtime import FILTER, NETWORK, domain_xml, make_spec
+from lab.libvirt.settings import Settings
 
-POOL_NAME = 'autonomous-rke2-lab'
 BRIDGE = 'virbr-rke2'
 NAMES = tuple(f'rke2-node{i:02}' for i in range(1, 5))
 LEGACY_NAMES = ('rke2-r9-cp01', 'rke2-r9-cp02', 'rke2-r9-cp03', 'rke2-r9-worker01')
-OWNED_NAMES = NAMES + LEGACY_NAMES
 DEFAULT_RELEASE = ROOT / 'lab/artifacts/packer/release-universal-20261017/release.json'
 HEALTH = 'sudo /usr/local/libexec/autonomous-rke2/host-agent -health'
 KUBECTL = 'sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml'
-NETWORK_XML = f"""<network><name>{NETWORK}</name>
-<bridge name='{BRIDGE}' stp='on' delay='0'/><dns enable='no'/>
-<ip address='192.168.250.1' netmask='255.255.255.0'/></network>"""
 
 
 def command(args, *, timeout=120):
@@ -55,9 +50,27 @@ def write_private(path, content):
 
 
 class Lab:
-    def __init__(self, pool=POOL):
-        self.pool = Path(pool)
+    def __init__(self, pool=None, *, cluster='lab', hostname_prefix=None, network=None,
+                 subnet=None, reserved_cidrs=None):
+        self.options = dict(cluster=cluster, hostname_prefix=hostname_prefix, network=network,
+                            subnet=subnet, reserved_cidrs=reserved_cidrs)
+        self.settings = Settings(**self.options)
+        self.pool = Path(pool) if pool is not None else self.settings.pool
         self.state_path = self.pool / 'universal-lab.json'
+
+    @property
+    def names(self):
+        if self.settings.cluster == 'lab' and self.settings.hostname_prefix == 'rke2-node':
+            return NAMES
+        return tuple(f'{self.settings.hostname_prefix}{i:02}' for i in range(1, 5))
+
+    @property
+    def legacy_names(self):
+        return LEGACY_NAMES if self.settings.cluster == 'lab' else ()
+
+    @property
+    def owned_names(self):
+        return self.names + self.legacy_names
 
     def inventory(self):
         domains = {name: ET.fromstring(virsh('dumpxml', name))
@@ -83,18 +96,20 @@ class Lab:
                     os.path.ismount(Path(directory) / child) for child in children
                 ):
                     raise ImageError('mount inside lab disk directory; unmount it before retrying')
+        saved = json.loads(self.state_path.read_text()) if self.state_path.exists() else None
+        self.settings = Settings(**self.options, saved=saved)
         for name, xml in inventory['domains'].items():
             paths = [node.get('file') for node in xml.findall('.//disk//source')]
             paths += [xml.findtext('os/nvram')]
             uses_disks = any(self.inside(path) for path in paths)
             uses_network = any(
-                node.get('network') == NETWORK or node.get('bridge') == BRIDGE
+                node.get('network') == self.settings.network or node.get('bridge') == self.settings.bridge
                 for node in xml.findall('devices/interface/source'))
-            uses_filter = any(node.get('filter') == FILTER
+            uses_filter = any(node.get('filter') == self.settings.filter
                               for node in xml.findall('devices/interface/filterref'))
-            if name not in OWNED_NAMES and (uses_disks or uses_network or uses_filter):
+            if name not in self.owned_names and (uses_disks or uses_network or uses_filter):
                 raise ImageError(f'unrelated VM {name} uses lab resources; refusing')
-            if name in OWNED_NAMES:
+            if name in self.owned_names:
                 disks = xml.findall("devices/disk[@device='disk']/source")
                 if not disks or any(not self.inside(node.get('file')) for node in disks):
                     raise ImageError(f'{name} has a disk outside lab directory; refusing')
@@ -102,24 +117,26 @@ class Lab:
                 if nvram and not self.inside(nvram):
                     raise ImageError(f'{name} has NVRAM outside lab directory; refusing')
         for name, xml in inventory['pools'].items():
-            if name == POOL_NAME and Path(xml.findtext('target/path', '/')).resolve() != self.pool:
+            if name == self.settings.pool_name and Path(xml.findtext('target/path', '/')).resolve() != self.pool:
                 raise ImageError('named lab pool points outside lab directory; refusing')
         for name, xml in inventory['networks'].items():
             bridge = xml.find('bridge')
-            if name == NETWORK:
-                if bridge is None or bridge.get('name') != BRIDGE or xml.find('forward') is not None:
+            if name == self.settings.network:
+                if bridge is None or bridge.get('name') != self.settings.bridge or xml.find('forward') is not None:
                     raise ImageError('named lab network has unexpected bridge/forwarding; refusing')
-            elif bridge is not None and bridge.get('name') == BRIDGE:
+            elif bridge is not None and bridge.get('name') == self.settings.bridge:
                 raise ImageError(f'unrelated network {name} uses lab bridge; refusing')
 
     def plan(self, inventory):
         print('Connection: qemu:///system')
-        print('VMs: ' + (', '.join(name for name in OWNED_NAMES if name in inventory['domains']) or '(none)'))
+        print('Cluster: ' + self.settings.cluster)
+        print('Hostnames: ' + ', '.join(self.names))
+        print('VMs: ' + (', '.join(name for name in self.owned_names if name in inventory['domains']) or '(none)'))
         print(f'Disk/settings directory: {self.pool} (exists: {self.pool.exists()})')
         print('Pools: ' + (', '.join(name for name, xml in inventory['pools'].items()
                                   if self.inside(xml.findtext('target/path'))) or '(none)'))
-        print(f'Network: {NETWORK} (defined: {NETWORK in inventory["networks"]})')
-        print(f'Filter: {FILTER} (defined: {FILTER in inventory["filters"]}); bridge: {BRIDGE}')
+        print(f'Network: {self.settings.network} (defined: {self.settings.network in inventory["networks"]})')
+        print(f'Filter: {self.settings.filter}; bridge: {self.settings.bridge}; subnet: {self.settings.subnet or "auto"}')
 
     def destroy(self, inventory):
         self.check_ownership(inventory)
@@ -133,13 +150,13 @@ class Lab:
                 errors.append(f'{label}: {exc}')
 
         # Never remove disks until every member is stopped and undefined.
-        for name in OWNED_NAMES:
+        for name in self.owned_names:
             if name in inventory['running']:
                 attempt(name, lambda name=name: virsh('destroy', name))
         if errors:
             raise ImageError('Stop failed; disks retained. Retry destroy.\n' + '\n'.join(errors))
         remaining = set(virsh('list', '--all', '--name').split())
-        for name in OWNED_NAMES:
+        for name in self.owned_names:
             if name in remaining:
                 flags = ['--managed-save', '--snapshots-metadata', '--checkpoints-metadata']
                 xml = inventory['domains'][name]
@@ -152,7 +169,7 @@ class Lab:
             raise ImageError('Undefine failed; disks retained. Retry destroy.\n' + '\n'.join(errors))
         refreshed = self.inventory()
         self.check_ownership(refreshed)
-        if any(name in refreshed['domains'] for name in OWNED_NAMES):
+        if any(name in refreshed['domains'] for name in self.owned_names):
             raise ImageError('a lab VM still exists; files retained; retry destroy')
 
         def remove_definition(kind, name):
@@ -161,22 +178,22 @@ class Lab:
             if name in virsh(kind + '-list', '--all', '--name').split():
                 virsh(kind + '-undefine', name)
 
-        if NETWORK in inventory['networks']:
-            attempt(NETWORK, lambda: remove_definition('net', NETWORK))
+        if self.settings.network in inventory['networks']:
+            attempt(self.settings.network, lambda: remove_definition('net', self.settings.network))
         for name, xml in inventory['pools'].items():
             if self.inside(xml.findtext('target/path')):
                 attempt(name, lambda name=name: remove_definition('pool', name))
-        if FILTER in inventory['filters']:
-            attempt(FILTER, lambda: virsh('nwfilter-undefine', FILTER))
+        if self.settings.filter in inventory['filters']:
+            attempt(self.settings.filter, lambda: virsh('nwfilter-undefine', self.settings.filter))
         if errors:
             raise ImageError('Settings cleanup incomplete; files retained. Retry destroy.\n' + '\n'.join(errors))
         # An interrupted previous cleanup can leave a bridge without a network definition.
         links = json.loads(command(['ip', '-j', 'link', 'show']))
-        if any(link['ifname'] == BRIDGE for link in links):
-            ports = json.loads(command(['ip', '-j', 'link', 'show', 'master', BRIDGE]))
+        if any(link['ifname'] == self.settings.bridge for link in links):
+            ports = json.loads(command(['ip', '-j', 'link', 'show', 'master', self.settings.bridge]))
             if ports:
                 raise ImageError('lab bridge still has ports; files retained; inspect before retrying')
-            command(['ip', 'link', 'delete', 'dev', BRIDGE, 'type', 'bridge'])
+            command(['ip', 'link', 'delete', 'dev', self.settings.bridge, 'type', 'bridge'])
         if self.pool.exists():
             shutil.rmtree(self.pool)
         print('Lab destroyed, including disks, NVRAM, seeds, keys, kubeconfig and settings.')
@@ -186,12 +203,12 @@ class Lab:
 
     def deployment_names(self, count):
         if not self.state_path.exists():
-            return NAMES[:count]
+            return self.names[:count]
         state = json.loads(self.state_path.read_text())
         if state.get('count') != count:
             raise ImageError('existing deployment uses a different release/node count; destroy it first')
         names = tuple(node['name'] for node in state['nodes'])
-        if names not in (NAMES[:count], LEGACY_NAMES[:count]):
+        if len(names) != count or names not in (self.names[:count], self.legacy_names[:count]):
             raise ImageError('invalid saved node list; refusing')
         return names
 
@@ -201,14 +218,18 @@ class Lab:
             if (state.get('schema'), state.get('release_sha256'), state.get('count')) != (1, release_hash, count):
                 raise ImageError('existing deployment uses a different release/node count; destroy it first')
             self.deployment_names(count)
-            for spec in state['nodes']:
+            for index, spec in enumerate(state['nodes']):
                 for key, suffix in (('disk', '.qcow2'), ('nvram', '.vars.fd'),
                                     ('seed', '.iso'), ('serial', '.serial.log')):
                     if Path(spec[key]) != self.pool / (spec['name'] + suffix):
                         raise ImageError('invalid saved node path; refusing')
+                if (spec['address'] != self.settings.address(index)
+                        or spec.get('network', self.settings.network) != self.settings.network
+                        or spec.get('filter', self.settings.filter) != self.settings.filter):
+                    raise ImageError('saved node network settings differ; refusing')
             print('Resuming existing deployment; retaining disks, identities and enrollment secret.')
         else:
-            if any(name in inventory['domains'] for name in OWNED_NAMES) or (
+            if any(name in inventory['domains'] for name in self.owned_names) or (
                 self.pool.exists() and any(self.pool.iterdir())
             ):
                 raise ImageError('old/partial unmanaged lab remains; run destroy.py first')
@@ -216,12 +237,14 @@ class Lab:
             self.pool.mkdir(parents=True, mode=0o711, exist_ok=True)
             os.chmod(self.pool, 0o711)
             state = {'schema': 1, 'release': str(release), 'release_sha256': release_hash,
+                     'configuration': self.settings.document(),
                      'count': count, 'secret': secrets.token_hex(32), 'nodes': [
-                         {**make_spec(NAMES[i], f'192.168.250.{11 + i}', 'node', self.pool),
+                         {**make_spec(self.names[i], self.settings.address(i), 'node', self.pool),
+                          'network': self.settings.network, 'filter': self.settings.filter,
                           'disk_gib': 60, 'boot_requested': False} for i in range(count)]}
             self.save(state)
         for name, xml in inventory['domains'].items():
-            if name in OWNED_NAMES:
+            if name in self.owned_names:
                 spec = next((node for node in state['nodes'] if node['name'] == name), None)
                 if not spec or xml.findtext('uuid') != spec['uuid']:
                     raise ImageError(f'{name} is not from saved deployment; refusing')
@@ -231,7 +254,7 @@ class Lab:
                 if (len(disks) != 1 or disks[0].get('file') != spec['disk']
                         or xml.findtext('os/nvram') != spec['nvram']
                         or mac is None or mac.get('address') != spec['mac']
-                        or source is None or source.get('network') != NETWORK):
+                        or source is None or source.get('network') != self.settings.network):
                     raise ImageError(f'{name} disk/NVRAM/NIC binding changed; refusing')
         return state
 
@@ -246,38 +269,49 @@ class Lab:
         starting = sum(name not in inventory['running'] for name in names)
         if available < (8 * starting + 8) * GIB:
             raise ImageError('insufficient available RAM: 8 GiB per stopped/new VM plus 8 GiB host reserve')
-        forbidden = [ipaddress.ip_network(cidr) for cidr in ('192.168.250.0/24', '10.42.0.0/16', '10.43.0.0/16')]
-        for link in json.loads(command(['ip', '-j', '-4', 'address', 'show'])):
-            if link['ifname'] == BRIDGE:
-                continue
-            for address in link.get('addr_info', []):
-                if address.get('family') == 'inet':
-                    subnet = ipaddress.ip_network(f"{address['local']}/{address['prefixlen']}", strict=False)
-                    if any(subnet.overlaps(network) for network in forbidden):
-                        raise ImageError(f'host interface {link["ifname"]} overlaps lab/pod/service subnet')
+
+    def check_networks(self, inventory):
+        if not self.settings.resuming:
+            for kind, name in (('networks', self.settings.network), ('pools', self.settings.pool_name),
+                               ('filters', self.settings.filter)):
+                if name in inventory[kind]:
+                    raise ImageError(f'{kind}: {name} already exists without this deployment state; '
+                                     'choose another cluster/network or destroy the old lab first')
+            links = json.loads(command(['ip', '-j', 'link', 'show']))
+            if any(link['ifname'] == self.settings.bridge for link in links):
+                raise ImageError('target bridge already exists without deployment state; refusing')
+        self.settings.select_subnet(
+            inventory, json.loads(command(['ip', '-j', '-4', 'address', 'show'])),
+            json.loads(command(['ip', '-j', '-4', 'route', 'show', 'table', 'all'])))
+        print(f'Network {self.settings.network}: {self.settings.subnet}; host {self.settings.gateway}', flush=True)
 
     def ensure_settings(self, inventory):
         network_path = self.pool / 'network.xml'
-        write_private(network_path, NETWORK_XML)
-        if NETWORK not in inventory['networks']:
+        write_private(network_path, self.settings.network_xml())
+        if self.settings.network not in inventory['networks']:
             virsh('net-define', network_path)
         else:
-            xml = inventory['networks'][NETWORK]
+            xml = inventory['networks'][self.settings.network]
             addresses = [node.get('address') for node in xml.findall('ip')]
-            if addresses != ['192.168.250.1']:
+            masks = [node.get('netmask') for node in xml.findall('ip')]
+            if addresses != [self.settings.gateway] or masks != [str(self.settings.subnet.netmask)]:
                 raise ImageError('existing network lacks expected host management address; destroy lab first')
-        if NETWORK not in virsh('net-list', '--name').split():
-            virsh('net-start', NETWORK)
-        virsh('net-autostart', NETWORK)
-        if POOL_NAME not in inventory['pools']:
-            virsh('pool-define-as', POOL_NAME, 'dir', '--target', self.pool)
-        if POOL_NAME not in virsh('pool-list', '--name').split():
-            virsh('pool-start', POOL_NAME)
-        virsh('pool-autostart', POOL_NAME)
-        if FILTER not in inventory['filters']:
-            virsh('nwfilter-define', ROOT / 'lab/libvirt/ipv4-only.xml')
+        if self.settings.network not in virsh('net-list', '--name').split():
+            virsh('net-start', self.settings.network)
+        virsh('net-autostart', self.settings.network)
+        if self.settings.pool_name not in inventory['pools']:
+            virsh('pool-define-as', self.settings.pool_name, 'dir', '--target', self.pool)
+        if self.settings.pool_name not in virsh('pool-list', '--name').split():
+            virsh('pool-start', self.settings.pool_name)
+        virsh('pool-autostart', self.settings.pool_name)
+        if self.settings.filter not in inventory['filters']:
+            filter_xml = ET.parse(ROOT / 'lab/libvirt/ipv4-only.xml').getroot()
+            filter_xml.set('name', self.settings.filter)
+            filter_path = self.pool / 'filter.xml'
+            write_private(filter_path, ET.tostring(filter_xml, encoding='unicode'))
+            virsh('nwfilter-define', filter_path)
         else:
-            filt = ET.fromstring(virsh('nwfilter-dumpxml', FILTER))
+            filt = ET.fromstring(virsh('nwfilter-dumpxml', self.settings.filter))
             rules = filt.findall('rule')
             if len(rules) != 1 or rules[0].get('action') != 'drop' or rules[0].get('direction') != 'inout' or not any(
                 node.get('protocolid') in ('0x86dd', 'ipv6') for node in rules[0].findall('mac')
@@ -325,7 +359,7 @@ class Lab:
             network = {'version': 2, 'ethernets': {'rke2lab0': {
                 'match': {'macaddress': spec['mac']}, 'set-name': 'rke2lab0',
                 'dhcp4': False, 'dhcp6': False, 'accept-ra': False,
-                'addresses': [spec['address'] + '/24'],
+                'addresses': [spec['address'] + f'/{self.settings.subnet.prefixlen}'],
                 'routes': [{'to': '10.43.0.0/16', 'via': '0.0.0.0'}]}}}
             write_private(seed / 'user-data', '#cloud-config\n' + json.dumps(userdata))
             write_private(seed / 'meta-data', json.dumps({
@@ -383,6 +417,7 @@ class Lab:
         manifest = verify_manifest(release)
         if manifest.get('kind') != 'release' or 'node' not in manifest.get('profiles', {}) or 'node.qcow2' not in manifest['files']:
             raise ImageError('a signed universal node release is required')
+        self.check_networks(inventory)
         self.check_capacity(count, inventory)
         state = self.load_or_initialize(release, digest(release), count, inventory)
         self.ensure_settings(inventory)
@@ -424,18 +459,27 @@ def main(operation, argv=None):
         'Create/resume the universal-image lab on local qemu:///system.' if operation == 'create'
         else 'Permanently delete the local lab, including disks and settings. Safe to retry.'))
     parser.add_argument('--plan', action='store_true', help='inspect ownership and print targets without changes')
+    parser.add_argument('--cluster', default='lab', help='cluster identity; scopes disks and all libvirt resources (default: lab)')
+    parser.add_argument('--hostname-prefix', help='base hostname, e.g. dev-node produces dev-node01; saved on first create')
+    parser.add_argument('--network', help='name of the isolated libvirt network to create; saved on first create')
+    parser.add_argument('--subnet', help='private IPv4 node subnet, e.g. 192.168.100.0/24; otherwise choose an unused /24')
+    parser.add_argument('--reserved-cidr', action='append', help='additional Kubernetes/VPN/network range to avoid; repeatable')
     if operation == 'create':
         parser.add_argument('--release', type=Path, default=DEFAULT_RELEASE, help='signed release.json')
         parser.add_argument('--nodes', type=int, choices=(3, 4), default=3, help='3 servers, optionally a fourth worker')
         parser.add_argument('--timeout', type=int, default=1200, help='health wait seconds per node (default: 1200)')
     else:
-        parser.add_argument('--confirm-lab', choices=(POOL_NAME,), help='required for actual deletion')
+        parser.add_argument('--confirm-cluster', help='must match --cluster for actual deletion')
+        parser.add_argument('--confirm-lab', help='legacy confirmation: must match the selected storage pool name')
     args = parser.parse_args(argv)
     try:
+        lab = Lab(cluster=args.cluster, hostname_prefix=args.hostname_prefix, network=args.network,
+                  subnet=args.subnet, reserved_cidrs=args.reserved_cidr)
         if not args.plan and os.geteuid() != 0:
             raise ImageError('run this script using sudo python3; no interactive root shell is needed')
-        if operation == 'destroy' and not args.plan and args.confirm_lab != POOL_NAME:
-            raise ImageError('deletion requires --confirm-lab autonomous-rke2-lab')
+        if (operation == 'destroy' and not args.plan
+                and args.confirm_cluster != args.cluster and args.confirm_lab != lab.settings.pool_name):
+            raise ImageError(f'deletion requires --confirm-cluster {args.cluster}')
         if operation == 'create' and args.timeout <= 0:
             raise ImageError('--timeout must be positive')
         required = ['virsh', 'ip']
@@ -447,10 +491,13 @@ def main(operation, argv=None):
         for tool in required:
             if not shutil.which(tool):
                 raise ImageError('required command missing: ' + tool)
-        lab = Lab()
         if args.plan:
             inventory = lab.inventory()
             lab.check_ownership(inventory)
+            if operation == 'create':
+                if lab.state_path.exists():
+                    lab.deployment_names(args.nodes)
+                lab.check_networks(inventory)
             lab.plan(inventory)
             if operation == 'create':
                 print(f'Create/resume: {args.nodes} nodes using {args.release.resolve()}')
@@ -462,7 +509,7 @@ def main(operation, argv=None):
             else:
                 lab.destroy(inventory)
         return 0
-    except (ImageError, OSError, ValueError, KeyError, subprocess.SubprocessError, ET.ParseError) as exc:
+    except (ImageError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, ET.ParseError) as exc:
         print(f'{operation}: {exc}', file=sys.stderr)
         print('No shell settings were changed. Resolve the error, then rerun this script.', file=sys.stderr)
         return 1

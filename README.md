@@ -70,6 +70,59 @@ For three servers **and a fourth worker**, use this command instead:
 sudo python3 lab/libvirt/create.py --nodes 4
 ```
 
+For multiple clusters, select a stable `--cluster` identity. Each gets separate
+VMs, storage pool/directory, bridge, network, IPv6 filter, enrollment secret,
+SSH credentials, and kubeconfig. Customize the hostname prefix, libvirt network
+name, and node subnet on first creation:
+
+```bash
+sudo python3 lab/libvirt/create.py --cluster dev \
+  --hostname-prefix dev-node --network dev-private --subnet 192.168.100.0/24 --plan
+sudo python3 lab/libvirt/create.py --cluster dev \
+  --hostname-prefix dev-node --network dev-private --subnet 192.168.100.0/24
+
+# Another independent cluster; allocate an unused private /24 automatically.
+sudo python3 lab/libvirt/create.py --cluster qa --hostname-prefix qa-node --nodes 4
+
+# Saved names, network and subnet are inherited when resuming.
+sudo python3 lab/libvirt/create.py --cluster dev
+
+# Destroy only dev, including its disks and settings. Leave qa intact.
+sudo python3 lab/libvirt/destroy.py --cluster dev --plan
+sudo python3 lab/libvirt/destroy.py --cluster dev --confirm-cluster dev
+```
+
+`--hostname-prefix dev-node` produces `dev-node01` through `dev-node04`.
+Without a prefix, a named cluster uses `rke2-CLUSTER-node01` through `04`.
+`--network` names a **new isolated libvirt network managed by this cluster**;
+the script never attaches to or repurposes someone else's network. Cluster
+names scope storage under `/var/lib/libvirt/images/autonomous-rke2-CLUSTER`.
+The default `--cluster lab` retains the original lab paths and naming.
+
+Before creating resources, the script checks active and inactive libvirt
+network subnets/routes, host IPv4 addresses and routes in all routing tables,
+and this image's Kubernetes pod/service CIDRs (`10.42.0.0/16`, `10.43.0.0/16`).
+Node subnets must be private IPv4 ranges, `/28` or larger, with no overlap in
+either direction. Existing VM/network/bridge/pool/filter name collisions also
+stop creation. If `--subnet` is omitted, an unused private `/24` is selected
+and saved. Resuming checks again and refuses newly introduced conflicts rather
+than changing the cluster's addresses.
+
+Remote Kubernetes/VPN ranges absent from the hypervisor's configuration cannot
+be discovered from local routes. Supply those explicitly, including the full
+pod and service CIDRs, using repeatable `--reserved-cidr` options on first
+creation:
+
+```bash
+sudo python3 lab/libvirt/create.py --cluster staging \
+  --reserved-cidr 10.244.0.0/16 --reserved-cidr 172.20.0.0/16
+```
+
+Each isolated cluster reuses the image's internal pod/service CIDRs; the
+networks have no external forwarding. Routing pods/services between clusters
+requires additional support for configurable Kubernetes CIDRs. Only node
+subnets are configurable here.
+
 Default signed release:
 `lab/artifacts/packer/release-universal-20261017/release.json`. To choose another
 universal release, add `--release /absolute/path/to/release.json`. Each node
@@ -83,16 +136,17 @@ required.
 
 Create verifies the signed release, generates fresh identities and one shared
 enrollment secret, prepares disks/seeds, and boots the first node alone. Each
-additional node starts after the previous node passes its health check. The
-nodes are named `rke2-node01` through `rke2-node04`, independent of their roles.
-Hostnames remain stable if roles change; automatic worker promotion is future
-work. Existing scripted deployments retain their saved legacy names when
+additional node starts after the previous node passes its health check. Default
+lab nodes are named `rke2-node01` through `rke2-node04`. All hostnames are
+independent of roles; automatic worker promotion is future work.
+Existing scripted deployments retain their saved legacy names when
 resumed, and destroy recognizes both naming schemes. Recreate the lab to adopt
 the neutral names; running nodes are never renamed automatically. The
-isolated network uses `192.168.250.0/24` without external forwarding; the
-hypervisor gets `192.168.250.1` for management. Servers use `.11`–`.13`, the
-optional worker `.14`. These subnets and the pod/service networks
-`10.42.0.0/16`, `10.43.0.0/16` must not overlap other host networks.
+isolated network defaults to `192.168.250.0/24` when that range is available.
+The hypervisor gets subnet address +1 for management. The first three nodes use
+addresses +11 through +13; the optional fourth uses +14. The selected subnet
+and gateway are printed before resource creation. Non-`/24` masks are also
+written into the cloud-init seed.
 
 **If create fails or is interrupted, resolve the reported error and rerun the
 same command.** It resumes using saved identities, disks, and secret; it does
@@ -104,19 +158,22 @@ before the first scripted create. Errors retain files and report retry steps.
 VM autostart stays disabled. To start this existing cluster after a host reboot,
 rerun the same create command: previously booted nodes start before health
 checks so existing etcd voters can regain quorum. This differs from the
-first-node-alone sequence used for a fresh cluster. Keep the same release and
-`--nodes` value when resuming. Saved deployment state and secret reside in the
-root-only `universal-lab.json` inside the lab disk directory. Both scripts share
-the existing image/lab operation lock.
+first-node-alone sequence used for a fresh cluster. Keep the same `--cluster`,
+release and `--nodes` value when resuming. Saved hostname/network/subnet options
+are reused; explicit conflicting options are rejected. Saved deployment state
+and secret reside in the root-only `universal-lab.json` inside the lab disk
+directory. Both scripts share the existing image/lab operation lock.
 
-Create prints node/pod status and saves a root-only admin kubeconfig. If a host
-`kubectl` is installed:
+Create prints node/pod status and saves a root-only admin kubeconfig. For the
+default lab, if a host `kubectl` is installed:
 
 ```bash
 sudo kubectl --kubeconfig /var/lib/libvirt/images/autonomous-rke2-lab/admin.yaml get nodes -o wide
 ```
 
-For diagnostics (substitute `.12`, `.13`, or `.14` for another node):
+For named clusters use their storage directory, for example
+`/var/lib/libvirt/images/autonomous-rke2-dev/admin.yaml`. For diagnostics on the
+default lab (substitute the selected cluster's directory and node IP as needed):
 
 ```bash
 sudo ssh -i /var/lib/libvirt/images/autonomous-rke2-lab/operator \

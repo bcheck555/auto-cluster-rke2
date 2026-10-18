@@ -46,9 +46,11 @@ class FakeHost:
         if op == 'nwfilter-list':
             return '\n'.join('11111111-1111-4111-8111-111111111111 ' + name for name in self.filters)
         if op == 'nwfilter-dumpxml':
-            return (life.ROOT / 'lab/libvirt/ipv4-only.xml').read_text()
+            xml = ET.parse(life.ROOT / 'lab/libvirt/ipv4-only.xml').getroot()
+            xml.set('name', args[1])
+            return ET.tostring(xml, encoding='unicode')
         if op == 'nwfilter-define':
-            self.filters.add(life.FILTER)
+            self.filters.add(ET.parse(args[1]).getroot().get('name'))
         elif op == 'nwfilter-undefine':
             self.filters.remove(args[1])
         elif op == 'define':
@@ -105,7 +107,13 @@ class FakeHost:
                 return ''
             if 'master' in args:
                 return json.dumps(self.ports)
-            return json.dumps([{'ifname': life.BRIDGE}] if self.bridge else [])
+            if 'link' in args:
+                bridges = {self.networks[name].find('bridge').get('name')
+                           for name in self.active_networks}
+                if self.bridge:
+                    bridges.add(life.BRIDGE)
+                return json.dumps([{'ifname': name} for name in bridges])
+            return '[]'
         if args[:2] == ['qemu-img', 'convert']:
             Path(args[-1]).write_bytes(b'fresh standalone disk')
         elif args[:2] == ['qemu-img', 'resize']:
@@ -399,6 +407,79 @@ class LifecycleTests(unittest.TestCase):
                 self.assertEqual(life.main('destroy', []), 1)
             self.assertFalse(self.host.calls)
             self.assertFalse(self.pool.exists())
+
+    def test_multiple_clusters_custom_names_subnet_resume_and_scoped_destroy(self):
+        dev_pool = self.pool.parent / 'dev'
+        prod_pool = self.pool.parent / 'prod'
+        self.lab = life.Lab(dev_pool, cluster='dev', hostname_prefix='compute-',
+                            network='dev-private', subnet='172.22.8.0/23')
+        self.create()
+        dev_state = json.loads(self.lab.state_path.read_text())
+        self.assertEqual([node['name'] for node in dev_state['nodes']],
+                         ['compute-01', 'compute-02', 'compute-03'])
+        first_seed = dev_pool / 'compute-01-seed' / 'network-config'
+        network = json.loads(first_seed.read_text())['ethernets']['rke2lab0']
+        self.assertEqual(network['addresses'], ['172.22.8.11/23'])
+        domain = self.host.domains['compute-01']
+        self.assertEqual(domain.find('devices/interface/source').get('network'), 'dev-private')
+        self.assertEqual(domain.find('devices/interface/filterref').get('filter'),
+                         'autonomous-rke2-dev-ipv4-only')
+        self.lab = life.Lab(prod_pool, cluster='prod')
+        self.create(4)
+        prod_state = json.loads(self.lab.state_path.read_text())
+        self.assertNotEqual(prod_state['configuration']['subnet'], dev_state['configuration']['subnet'])
+        self.assertNotEqual(prod_state['secret'], dev_state['secret'])
+        prod_names = {node['name'] for node in prod_state['nodes']}
+        self.lab = life.Lab(dev_pool, cluster='dev')  # No custom flags needed on resume.
+        self.create()
+        self.assertEqual(self.lab.settings.hostname_prefix, 'compute-')
+        self.assertEqual(self.lab.settings.network, 'dev-private')
+        self.assertEqual(json.loads(self.lab.state_path.read_text())['nodes'], dev_state['nodes'])
+        with patch.object(life, 'Lab', return_value=self.lab), \
+                patch.object(life.os, 'geteuid', return_value=0), \
+                patch.object(life.shutil, 'which', return_value='/fixture/tool'), \
+                patch.object(life, 'operation_lock', side_effect=contextlib.nullcontext):
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(life.main('destroy', ['--cluster', 'dev', '--confirm-cluster', 'prod']), 1)
+            self.assertTrue(dev_pool.exists())
+            self.assertTrue(prod_pool.exists())
+            self.assertEqual(life.main('destroy', ['--cluster', 'dev', '--confirm-cluster', 'dev']), 0)
+        self.assertFalse(dev_pool.exists())
+        self.assertTrue(prod_pool.exists())
+        self.assertEqual(set(self.host.domains), prod_names)
+        self.assertEqual(set(self.host.networks), {'autonomous-rke2-prod'})
+        self.assertEqual(set(self.host.pools), {'autonomous-rke2-prod'})
+        self.assertEqual(self.host.filters, {'autonomous-rke2-prod-ipv4-only'})
+
+    def test_custom_subnet_conflict_rejected_before_state_or_definitions(self):
+        self.lab = life.Lab(self.pool, cluster='dev', subnet='10.43.8.0/24')
+        with self.assertRaisesRegex(life.ImageError, 'Kubernetes pod/service'):
+            self.create()
+        self.assertFalse(self.pool.exists())
+        self.assertFalse(self.host.calls)
+
+    def test_second_cluster_cannot_reuse_hostname_prefix(self):
+        self.lab = life.Lab(self.pool, cluster='dev', hostname_prefix='compute-')
+        self.create()
+        other = self.pool.parent / 'other'
+        self.lab = life.Lab(other, cluster='prod', hostname_prefix='compute-')
+        before = list(self.host.calls)
+        with self.assertRaisesRegex(life.ImageError, 'outside lab directory'):
+            self.create()
+        self.assertEqual(before, self.host.calls)
+        self.assertFalse(other.exists())
+
+    def test_old_state_without_configuration_still_resumes(self):
+        self.create()
+        state = json.loads(self.lab.state_path.read_text())
+        del state['configuration']
+        for node in state['nodes']:
+            del node['network']
+            del node['filter']
+        self.lab.save(state)
+        self.lab = life.Lab(self.pool)
+        self.create()
+        self.assertEqual(set(self.host.domains), set(life.NAMES[:3]))
 
 
 if __name__ == '__main__':
