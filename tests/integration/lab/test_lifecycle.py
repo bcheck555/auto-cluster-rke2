@@ -193,6 +193,43 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual((self.pool / 'admin.yaml').stat().st_mode & 0o777, 0o600)
         self.assertIn('192.168.250.11', (self.pool / 'admin.yaml').read_text())
 
+    def test_dynamic_counts_create_resume_and_destroy_every_node(self):
+        for count in (1, 2, 7, 12):
+            with self.subTest(count=count):
+                self.create(count)
+                state = json.loads(self.lab.state_path.read_text())
+                self.assertEqual(len(state['nodes']), count)
+                self.assertEqual(state['nodes'][-1]['name'], f'rke2-node{count:02}')
+                self.assertEqual(state['nodes'][-1]['address'], f'192.168.250.{10 + count}')
+                identifiers = [node['uuid'] for node in state['nodes']]
+                self.host.running.clear()
+                self.create(count)
+                resumed = json.loads(self.lab.state_path.read_text())
+                self.assertEqual([node['uuid'] for node in resumed['nodes']], identifiers)
+                self.lab.destroy(self.host.inventory())
+                self.assertFalse(self.host.domains)
+                self.assertFalse(self.host.running)
+                self.assertFalse(self.pool.exists())
+
+    def test_orphan_numbered_nodes_above_four_are_discovered_for_cleanup(self):
+        self.pool.mkdir()
+        for index in (5, 12, 100):
+            name = f'rke2-node{index:02}'
+            spec = life.make_spec(name, '192.168.250.11', 'node', self.pool)
+            Path(spec['disk']).write_bytes(b'orphan')
+            self.host.domains[name] = ET.fromstring(life.domain_xml(spec))
+            self.host.running.add(name)
+        self.lab.destroy(self.host.inventory())
+        self.assertFalse(self.host.domains)
+        self.assertFalse(self.pool.exists())
+
+    def test_excess_count_is_rejected_before_creating_resources(self):
+        self.lab = life.Lab(self.pool, subnet='192.168.100.0/28')
+        with self.assertRaisesRegex(life.ImageError, 'capacity is 4'):
+            self.create(5)
+        self.assertFalse(self.pool.exists())
+        self.assertFalse(self.host.calls)
+
     def test_resume_after_second_node_failure_and_regain_quorum_before_waiting(self):
         def fail_second(spec, timeout):
             if spec['name'] == life.NAMES[1]:
@@ -303,7 +340,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(self.host.bridge)
 
     def test_legacy_deployment_resumes_with_saved_names_and_capacity_then_destroys(self):
-        with patch.object(life, 'NAMES', life.LEGACY_NAMES):
+        with patch.object(self.lab, 'node_names', side_effect=lambda count: life.LEGACY_NAMES[:count]):
             self.create(4)
         state = json.loads(self.lab.state_path.read_text())
         self.host.running.clear()

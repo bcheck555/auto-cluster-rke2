@@ -21,6 +21,7 @@ from lab.libvirt.settings import Settings
 from lab.libvirt.cluster_config import init_env, load_config, read_env
 
 BRIDGE = 'virbr-rke2'
+# Historical four-node list for legacy callers; provisioning uses node_names(count).
 NAMES = tuple(f'rke2-node{i:02}' for i in range(1, 5))
 LEGACY_NAMES = ('rke2-r9-cp01', 'rke2-r9-cp02', 'rke2-r9-cp03', 'rke2-r9-worker01')
 DEFAULT_RELEASE = ROOT / 'lab/artifacts/packer/release-universal-20261017/release.json'
@@ -61,12 +62,15 @@ class Lab:
         self.state_path = self.pool / 'universal-lab.json'
         self.enrollment_secret = enrollment_secret
         self.input_files = tuple(Path(path).resolve() for path in input_files)
+        self.node_count = 3
+        self._owned_names = ()
+
+    def node_names(self, count):
+        return tuple(f'{self.settings.hostname_prefix}{i:02}' for i in range(1, count + 1))
 
     @property
     def names(self):
-        if self.settings.cluster == 'lab' and self.settings.hostname_prefix == 'rke2-node':
-            return NAMES
-        return tuple(f'{self.settings.hostname_prefix}{i:02}' for i in range(1, 5))
+        return self.node_names(self.node_count)
 
     @property
     def legacy_names(self):
@@ -74,7 +78,15 @@ class Lab:
 
     @property
     def owned_names(self):
-        return self.names + self.legacy_names
+        return self._owned_names
+
+    def owns_name(self, name):
+        if name in self.legacy_names:
+            return True
+        prefix = self.settings.hostname_prefix
+        suffix = name[len(prefix):] if name.startswith(prefix) else ''
+        return bool(suffix.isascii() and suffix.isdigit() and int(suffix) > 0
+                    and name == f'{prefix}{int(suffix):02}')
 
     def inventory(self):
         domains = {name: ET.fromstring(virsh('dumpxml', name))
@@ -110,6 +122,10 @@ class Lab:
             if self.inside(path):
                 raise ImageError('cluster config/.env is inside generated lab directory; move it outside before cleanup')
         self.settings = Settings(**self.options, saved=saved)
+        if saved:
+            self.settings.validate_nodes(saved['count'])
+            self.node_count = saved['count']
+        self._owned_names = tuple(name for name in inventory['domains'] if self.owns_name(name))
         for name, xml in inventory['domains'].items():
             paths = [node.get('file') for node in xml.findall('.//disk//source')]
             paths += [xml.findtext('os/nvram')]
@@ -142,7 +158,8 @@ class Lab:
     def plan(self, inventory):
         print('Connection: qemu:///system')
         print('Cluster: ' + self.settings.cluster)
-        print('Hostnames: ' + ', '.join(self.names))
+        first, last = self.node_names(1)[0], f'{self.settings.hostname_prefix}{self.node_count:02}'
+        print(f'Hostnames: {first}' + (f' through {last}' if self.node_count > 1 else ''))
         print('VMs: ' + (', '.join(name for name in self.owned_names if name in inventory['domains']) or '(none)'))
         print(f'Disk/settings directory: {self.pool} (exists: {self.pool.exists()})')
         print('Pools: ' + (', '.join(name for name, xml in inventory['pools'].items()
@@ -215,16 +232,18 @@ class Lab:
 
     def deployment_names(self, count):
         if not self.state_path.exists():
-            return self.names[:count]
+            return self.node_names(count)
         state = json.loads(self.state_path.read_text())
         if state.get('count') != count:
             raise ImageError('existing deployment uses a different release/node count; destroy it first')
         names = tuple(node['name'] for node in state['nodes'])
-        if len(names) != count or names not in (self.names[:count], self.legacy_names[:count]):
+        if len(names) != count or names not in (self.node_names(count), self.legacy_names[:count]):
             raise ImageError('invalid saved node list; refusing')
         return names
 
     def load_or_initialize(self, release, release_hash, count, inventory):
+        self.settings.validate_nodes(count)
+        self.node_count = count
         if self.state_path.exists():
             state = json.loads(self.state_path.read_text())
             if (state.get('schema'), state.get('release_sha256'), state.get('count')) != (1, release_hash, count):
@@ -250,10 +269,11 @@ class Lab:
             import secrets
             self.pool.mkdir(parents=True, mode=0o711, exist_ok=True)
             os.chmod(self.pool, 0o711)
+            names = self.node_names(count)
             state = {'schema': 1, 'release': str(release), 'release_sha256': release_hash,
                      'configuration': self.settings.document(),
                      'count': count, 'secret': self.enrollment_secret or secrets.token_hex(32), 'nodes': [
-                         {**make_spec(self.names[i], self.settings.address(i), 'node', self.pool),
+                         {**make_spec(names[i], self.settings.address(i), 'node', self.pool),
                           'network': self.settings.network, 'filter': self.settings.filter,
                           **self.settings.vm, 'boot_requested': False} for i in range(count)]}
             self.save(state)
@@ -276,8 +296,12 @@ class Lab:
         return state
 
     def check_capacity(self, count, inventory):
-        names = self.deployment_names(count)
-        new_disks = sum(not (self.pool / (name + '.qcow2')).exists() for name in names)
+        if self.state_path.exists():
+            names = self.deployment_names(count)
+            new_disks = sum(not (self.pool / (name + '.qcow2')).exists() for name in names)
+            starting = sum(name not in inventory['running'] for name in names)
+        else:
+            new_disks = starting = count
         parent = self.pool if self.pool.exists() else self.pool.parent
         disk_gib = self.settings.vm['disk_gib']
         memory_mib = self.settings.vm['memory_mib']
@@ -285,7 +309,6 @@ class Lab:
             raise ImageError(f'insufficient disk space: reserve {disk_gib} GiB per new disk plus 8 GiB')
         available = next(int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
                          if line.startswith('MemAvailable:'))
-        starting = sum(name not in inventory['running'] for name in names)
         if available < (memory_mib * starting + 8192) * 1024**2:
             raise ImageError(f'insufficient available RAM: {memory_mib} MiB per stopped/new VM plus 8 GiB host reserve')
 
@@ -301,7 +324,7 @@ class Lab:
                 raise ImageError('target bridge already exists without deployment state; refusing')
         self.settings.select_subnet(
             inventory, json.loads(command(['ip', '-j', '-4', 'address', 'show'])),
-            json.loads(command(['ip', '-j', '-4', 'route', 'show', 'table', 'all'])))
+            json.loads(command(['ip', '-j', '-4', 'route', 'show', 'table', 'all'])), count=self.node_count)
         print(f'Network {self.settings.network}: {self.settings.subnet}; host {self.settings.gateway}', flush=True)
 
     def ensure_settings(self, inventory):
@@ -431,7 +454,9 @@ class Lab:
             virsh('start', spec['name'])
 
     def create(self, release, count, timeout, inventory):
+        self.node_count = count
         self.check_ownership(inventory)
+        self.settings.validate_nodes(count)
         print('Verifying signed universal release...', flush=True)
         manifest = verify_manifest(release)
         if manifest.get('kind') != 'release' or 'node' not in manifest.get('profiles', {}) or 'node.qcow2' not in manifest['files']:
@@ -482,11 +507,11 @@ def main(operation, argv=None):
     parser.add_argument('--cluster', help='cluster identity; scopes disks and all libvirt resources (default: lab)')
     parser.add_argument('--hostname-prefix', help='base hostname, e.g. dev-node produces dev-node01; saved on first create')
     parser.add_argument('--network', help='name of the isolated libvirt network to create; saved on first create')
-    parser.add_argument('--subnet', help='private IPv4 node subnet, e.g. 192.168.100.0/24; otherwise choose an unused /24')
+    parser.add_argument('--subnet', help='private IPv4 node subnet; otherwise choose an unused subnet sized for the node count')
     parser.add_argument('--reserved-cidr', action='append', help='additional Kubernetes/VPN/network range to avoid; repeatable')
     if operation == 'create':
         parser.add_argument('--release', type=Path, help='signed release.json')
-        parser.add_argument('--nodes', type=int, choices=(3, 4), help='3 servers, optionally a fourth worker')
+        parser.add_argument('--nodes', type=int, help='positive node count; first three are servers, later nodes workers (default: 3)')
         parser.add_argument('--timeout', type=int, help='health wait seconds per node (default: 1200)')
         parser.add_argument('--init-secrets', action='store_true', help='create missing paired .env only; never overwrite it or create VMs')
     else:
@@ -512,9 +537,13 @@ def main(operation, argv=None):
             options = dict(cluster=args.cluster, hostname_prefix=args.hostname_prefix,
                            network=args.network, subnet=args.subnet, reserved_cidrs=args.reserved_cidr)
             if operation == 'create':
-                args.release, args.nodes = args.release or DEFAULT_RELEASE, args.nodes or 3
+                args.release = args.release or DEFAULT_RELEASE
+                args.nodes = args.nodes if args.nodes is not None else 3
                 args.timeout = args.timeout if args.timeout is not None else 1200
         lab = Lab(**options, input_files=(config.path, config.env_path) if config else ())
+        if operation == 'create':
+            lab.settings.validate_nodes(args.nodes)
+            lab.node_count = args.nodes
         if config and operation == 'destroy' and lab.state_path.exists():
             # YAML may describe the desired replacement. Clean up the saved deployment.
             lab.options = dict(cluster=args.cluster)

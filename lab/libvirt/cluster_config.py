@@ -98,9 +98,7 @@ def load_config(path, *, check_siblings=True):
                    network=network.get('name'), subnet=network['subnet'],
                    reserved_cidrs=reserved, vm=resources)
     settings = Settings(**options)
-    settings.select_subnet({'networks': {}}, [], [])
-    if data['nodes'] not in (3, 4) or type(data['nodes']) is not int:
-        raise ImageError('nodes must be 3 (servers) or 4 (servers plus worker)')
+    settings.select_subnet({'networks': {}}, [], [], count=data['nodes'])
     timeout = integer(data.get('health_timeout', 1200), 'health_timeout', 1, 86400)
     if not isinstance(data['release'], str) or not data['release'].strip():
         raise ImageError('release must be a nonempty manifest path')

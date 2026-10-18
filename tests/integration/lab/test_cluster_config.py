@@ -50,6 +50,16 @@ class ClusterConfigTests(unittest.TestCase):
         self.assertEqual(loaded.timeout, 1200)
         self.assertFalse(self.env.exists())
 
+    def test_accepts_positive_counts_and_rejects_subnet_overflow(self):
+        for count in (1, 2, 7, 100, 244):
+            data = {**document(), 'nodes': count}
+            self.path.write_text(json.dumps(data))
+            with self.subTest(count=count):
+                self.assertEqual(config.load_config(self.path).nodes, count)
+        self.path.write_text(json.dumps({**document(), 'nodes': 245}))
+        with self.assertRaisesRegex(ImageError, 'capacity is 244'):
+            config.load_config(self.path)
+
     def test_committed_templates_load_and_have_no_live_secret(self):
         self.path.write_text((ROOT / 'clusters/cluster.yaml.example').read_text())
         loaded = config.load_config(self.path)
@@ -60,7 +70,7 @@ class ClusterConfigTests(unittest.TestCase):
             config.read_env(self.env)
 
     def test_rejects_unknown_fields_invalid_types_and_resource_limits(self):
-        for mutation in ({'typo': 'x'}, {'nodes': True}, {'nodes': 2},
+        for mutation in ({'typo': 'x'}, {'nodes': True}, {'nodes': 0}, {'nodes': -1}, {'nodes': 1.5},
                          {'schema': True}, {'cluster': 12}, {'health_timeout': 0},
                          {'vm': {'vcpus': 1}}, {'vm': {'disk_gib': 31}},
                          {'network': {'subnet': None}}, {'network': {'subnet': '10.43.1.0/24'}}):

@@ -78,7 +78,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_no_available_auto_subnet_fails(self):
         with self.assertRaisesRegex(ImageError, 'no unused private'):
-            self.select(Settings(reserved_cidrs=['172.16.0.0/12', '192.168.0.0/16']))
+            self.select(Settings(reserved_cidrs=['172.16.0.0/12', '192.168.0.0/16', '10.0.0.0/8']))
 
     def test_resume_inherits_configuration_and_ignores_only_its_own_network(self):
         first = Settings('dev', hostname_prefix='compute-', network='dev-net', subnet='172.22.8.0/23')
@@ -110,6 +110,38 @@ class SettingsTests(unittest.TestCase):
                       {'configuration': {'cluster': 'dev', 'network': 'dev-net'}}):
             with self.subTest(state=state), self.assertRaisesRegex(ImageError, 'invalid saved'):
                 Settings('dev', saved=state)
+
+    def test_count_capacity_prevents_broadcast_and_cross_subnet_addresses(self):
+        settings = Settings(subnet='192.168.100.0/28')
+        settings.validate_nodes(4)
+        self.assertEqual(settings.address(3), '192.168.100.14')
+        with self.assertRaisesRegex(ImageError, 'capacity is 4'):
+            settings.validate_nodes(5)
+        with self.assertRaisesRegex(ImageError, 'exceed usable subnet'):
+            settings.address(4)
+        for count in (0, -1, True, 1.2):
+            with self.subTest(count=count), self.assertRaisesRegex(ImageError, 'positive integer'):
+                settings.validate_nodes(count)
+
+    def test_automatic_subnet_expands_for_larger_node_counts(self):
+        settings = Settings('large')
+        settings.select_subnet({'networks': {}}, [], [], count=500)
+        self.assertEqual(str(settings.subnet), '192.168.250.0/23')
+        self.assertEqual(settings.address(499), '192.168.251.254')
+        with self.assertRaisesRegex(ImageError, 'capacity is 500'):
+            settings.validate_nodes(501)
+
+    def test_hostname_length_includes_growing_numeric_suffix(self):
+        settings = Settings(hostname_prefix='a' * 61, subnet='192.168.100.0/24')
+        settings.validate_nodes(99)
+        with self.assertRaisesRegex(ImageError, '63 characters'):
+            settings.validate_nodes(100)
+
+    def test_existing_image_catalog_capacity_checked_before_provisioning(self):
+        settings = Settings('large', subnet='172.24.0.0/21')
+        settings.validate_nodes(1024)
+        with self.assertRaisesRegex(ImageError, '1024 members'):
+            settings.validate_nodes(1025)
 
 
 if __name__ == '__main__':

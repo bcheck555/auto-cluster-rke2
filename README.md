@@ -111,7 +111,7 @@ deployment; restore the key or destroy and recreate intentionally.
 
 Each cluster gets separate VM names, pool/directory, bridge, network, filter,
 credentials and kubeconfig. `--hostname-prefix dev-node` (or its YAML field)
-produces `dev-node01` through `dev-node04`. Names stay independent of roles.
+produces `dev-node01`, `dev-node02`, and so on. Names stay independent of roles.
 Automatic worker promotion remains future work.
 
 Every real `.yaml`/`.yml` in the selected config's folder reserves its cluster
@@ -128,7 +128,11 @@ or resource-name collisions stops creation before provisioning. Add remote
 Kubernetes/VPN ranges invisible to the host to `network.reserved_cidrs`.
 
 YAML requires an explicit private IPv4 node subnet, `/28` or larger. Hypervisor
-management uses subnet address +1; nodes use +11, +12, +13 and optionally +14.
+management uses subnet address +1; nodes use +11 onward, ending before broadcast.
+Positive node counts are accepted within host, subnet and image capacity. The
+current image's membership catalog supports up to 1,024 nodes. A `/28`
+fits 4 nodes and a `/24` fits 244 with this address allocation; use a larger
+subnet for more. Prefixes plus growing node indices must fit DNS hostname limits.
 The selected mask is written to every seed. Networks are isolated without
 external forwarding. Their internal Kubernetes CIDRs can be reused in separate
 isolated clusters; routing pods/services between clusters needs additional
@@ -145,8 +149,9 @@ libvirt/KVM, Python 3, `virsh`, `ip`, `qemu-img`, `qemu-system-x86_64`,
 `/usr/share/OVMF/{OVMF_CODE_4M.fd,OVMF_VARS_4M.fd}`.
 
 Create verifies the signed release, prepares ordinary deployment seeds, boots
-the first node alone and checks health before each subsequent boot. Three VMs
-produce three servers; four add a worker. No guest Internet access is needed.
+the first node alone and checks health before each subsequent boot. One node
+forms a single-server cluster; nodes two and three become servers. Every node
+after the third becomes a worker. No guest Internet access is needed.
 The default release is
 `lab/artifacts/packer/release-universal-20261017/release.json`.
 
@@ -177,7 +182,8 @@ sudo ssh -i /var/lib/libvirt/images/autonomous-rke2-dev/operator \
 
 CLI-only deployments remain supported through `--cluster`, `--hostname-prefix`,
 `--network`, `--subnet`, `--reserved-cidr`, `--release`, and `--nodes` (see
-`--help`). Without YAML, an omitted subnet selects an unused private `/24`.
+`--help`). Without YAML, an omitted subnet selects an unused private `/24`, or
+a larger private subnet when the requested node count needs one.
 The default `lab` identity retains `/var/lib/libvirt/images/autonomous-rke2-lab`
 and recognizes historical names during resume/cleanup. Existing deployments can
 adopt a matching YAML and initialize its `.env` from saved runtime state.

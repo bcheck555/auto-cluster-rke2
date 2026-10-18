@@ -13,6 +13,8 @@ from lab.packer.artifacts import ImageError
 DEFAULT_SUBNET = '192.168.250.0/24'
 KUBERNETES_CIDRS = ('10.42.0.0/16', '10.43.0.0/16')
 DEFAULT_VM = {'vcpus': 4, 'memory_mib': 8192, 'disk_gib': 60}
+# Existing signed node runtime guard in internal/formation/{ledger,kubernetes}.go.
+MAX_IMAGE_NODES = 1024
 
 
 def ipv4_subnet(value):
@@ -101,7 +103,20 @@ class Settings:
         return str(self.subnet.network_address + 1)
 
     def address(self, index):
+        if type(index) is not int or index < 0 or index >= self.subnet.num_addresses - 12:
+            raise ImageError('node address would exceed usable subnet addresses')
         return str(self.subnet.network_address + 11 + index)
+
+    def validate_nodes(self, count):
+        if type(count) is not int or count < 1:
+            raise ImageError('nodes must be a positive integer')
+        if count > MAX_IMAGE_NODES:
+            raise ImageError(f'this image supports at most {MAX_IMAGE_NODES} members in its cluster catalog')
+        if len(self.hostname_prefix) + max(2, len(str(count))) > 63:
+            raise ImageError('hostname prefix plus node index exceeds 63 characters; shorten the prefix')
+        if self.subnet is not None and count > self.subnet.num_addresses - 12:
+            raise ImageError(f'{count} nodes do not fit {self.subnet}; capacity is {self.subnet.num_addresses - 12} '
+                             'with node addresses starting at subnet +11')
 
     def document(self):
         if self.subnet is None:
@@ -118,7 +133,8 @@ class Settings:
         ET.SubElement(root, 'ip', address=self.gateway, netmask=str(self.subnet.netmask))
         return ET.tostring(root, encoding='unicode')
 
-    def select_subnet(self, inventory, addresses, routes):
+    def select_subnet(self, inventory, addresses, routes, *, count=1):
+        self.validate_nodes(count)
         reserved = []
         def add(value, source):
             try:
@@ -166,10 +182,13 @@ class Settings:
             if overlap:
                 raise ImageError(f'subnet {self.subnet} overlaps {overlap[0]} ({overlap[1]})')
             return
-        candidates = itertools.chain(
-            [ipaddress.ip_network(DEFAULT_SUBNET)],
-            ipaddress.ip_network('172.16.0.0/12').subnets(new_prefix=24),
-            ipaddress.ip_network('192.168.0.0/16').subnets(new_prefix=24))
+        prefix = 32 - max(8, (count + 11).bit_length())
+        blocks = [ipaddress.ip_network(cidr) for cidr in
+                  ('172.16.0.0/12', '192.168.0.0/16', '10.0.0.0/8')]
+        preferred = ([ipaddress.ip_network(DEFAULT_SUBNET).supernet(new_prefix=prefix)]
+                     if 16 <= prefix <= 24 else [])
+        candidates = itertools.chain(preferred, *(block.subnets(new_prefix=prefix)
+                                                 for block in blocks if prefix >= block.prefixlen))
         self.subnet = next((network for network in candidates if not conflict(network)), None)
         if self.subnet is None:
-            raise ImageError('no unused private /24 found; supply a non-conflicting --subnet')
+            raise ImageError('no unused private subnet found for this node count; supply a non-conflicting --subnet')

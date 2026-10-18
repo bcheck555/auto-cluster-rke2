@@ -10,15 +10,18 @@ schema: 1
 # a deployment, destroy it using its old identity before changing this value.
 cluster: dev
 
-# Stable role-neutral hostnames: dev-node01, dev-node02, etc. Maximum 61 chars.
+# Stable role-neutral hostnames: dev-node01, dev-node02, etc. Maximum 61 chars,
+# Use a shorter prefix when needed so prefix plus numeric index stays within 63.
 hostname_prefix: dev-node
 
 # Signed universal release.json. Relative paths resolve from THIS YAML file's
 # directory, not the shell's working directory. The same disk serves every role.
 release: ../lab/artifacts/packer/release-universal-20261017/release.json
 
-# Currently supported: 3 = three servers; 4 = three servers plus one worker.
-# Role assignment is automatic; per-node roles/seed addresses are not inputs.
+# Any positive integer that fits host resources, subnet and image capacity.
+# The current image's membership catalog supports at most 1024 nodes.
+# 1 = one server; 2/3 = two/three servers; every node after the third is a worker.
+# Roles are automatic. Counts above 4 need no special configuration.
 nodes: 3
 
 # Seconds to wait for each node's independent health check. A failed create can
@@ -39,7 +42,8 @@ network:
   name: dev-private
 
   # Required in YAML: explicit RFC1918 IPv4 subnet, /28 or larger.
-  # Hypervisor = network address +1; nodes = +11, +12, +13, optionally +14.
+  # Hypervisor = subnet +1; nodes = +11 onward, ending before the broadcast IP.
+  # /28 fits 4 nodes; /24 fits 244. Select a larger subnet for additional nodes.
   # Check all host/libvirt/Kubernetes/VPN ranges before choosing this value.
   # This range is only an example; --plan reports local conflicts.
   subnet: 192.168.100.0/24
