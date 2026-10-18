@@ -38,12 +38,25 @@ NVRAM, cloud-init seeds, enrollment secret, and libvirt settings. Back up needed
 data first. Published images and repository signing/SSH keys remain available.
 No teardown or deployment happens merely by updating this README.
 
-Run all blocks, in order, in **one root Bash shell** from the repository root:
+If your prompt already starts with `root@`, skip this command. Otherwise run
+**only this command**, then wait for the new root prompt before copying the
+setup block below. Pasting a shell-launch command together with later commands
+can leave those later commands queued in the original shell instead of running
+them in the new root shell.
 
 ```bash
 sudo bash
+```
+
+Run the remaining blocks, in order, in **that same root Bash shell**. If a
+command fails, stop and resolve the error; `set -e` may exit the shell, losing
+its variables. Rerun this entire setup block after entering a new shell. Do not
+continue until it prints `Setup complete; continue in this shell`.
+
+```bash
 cd /home/checkb/repos/github/auto-cluster
 set -euo pipefail
+test "$EUID" -eq 0
 umask 077
 export LIBVIRT_DEFAULT_URI=qemu:///system
 pool=/var/lib/libvirt/images/autonomous-rke2-lab
@@ -62,6 +75,8 @@ for tool in virsh qemu-img qemu-system-x86_64 genisoimage ssh ssh-keygen; do
 done
 test -f /usr/share/OVMF/OVMF_CODE_4M.fd
 test -f /usr/share/OVMF/OVMF_VARS_4M.fd
+cluster_preflight=verified
+echo 'Setup complete; continue in this shell'
 ```
 
 **Delete the old cluster.** Stop all members before removing any disks. Names
@@ -70,6 +85,12 @@ contain only this lab's files; inspect it and ensure no other VM uses its disks.
 This also removes retained replacement generations and rollback copies.
 
 ```bash
+set -euo pipefail
+: "${pool:?Setup missing; rerun the setup block in this shell}"
+: "${cluster_preflight:?Setup incomplete; rerun the setup block}"
+test "$cluster_preflight" = verified
+test "$pool" = /var/lib/libvirt/images/autonomous-rke2-lab
+test "${LIBVIRT_DEFAULT_URI:-}" = qemu:///system
 virsh list --all
 virsh pool-dumpxml autonomous-rke2-lab
 ls -la "$pool"
@@ -116,6 +137,13 @@ another host network. The old `replace.py` and default lab config still target
 historical images; use this recipe for the universal release.
 
 ```bash
+set -euo pipefail
+: "${pool:?Setup missing; rerun the setup block in this shell}"
+: "${release:?Setup missing; rerun the setup block in this shell}"
+: "${cluster_preflight:?Setup incomplete; rerun the setup block}"
+test "$cluster_preflight" = verified
+test "$pool" = /var/lib/libvirt/images/autonomous-rke2-lab
+test "${LIBVIRT_DEFAULT_URI:-}" = qemu:///system
 install -d -m 0711 "$pool"
 cat > "$pool/network.xml" <<'XML'
 <network>
