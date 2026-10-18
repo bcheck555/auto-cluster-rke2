@@ -84,6 +84,11 @@ required.
 Create verifies the signed release, generates fresh identities and one shared
 enrollment secret, prepares disks/seeds, and boots the first node alone. Each
 additional node starts after the previous node passes its health check. The
+nodes are named `rke2-node01` through `rke2-node04`, independent of their roles.
+Hostnames remain stable if roles change; automatic worker promotion is future
+work. Existing scripted deployments retain their saved legacy names when
+resumed, and destroy recognizes both naming schemes. Recreate the lab to adopt
+the neutral names; running nodes are never renamed automatically. The
 isolated network uses `192.168.250.0/24` without external forwarding; the
 hypervisor gets `192.168.250.1` for management. Servers use `.11`–`.13`, the
 optional worker `.14`. These subnets and the pod/service networks

@@ -20,7 +20,9 @@ from lab.packer.runtime import FILTER, NETWORK, POOL, domain_xml, make_spec
 
 POOL_NAME = 'autonomous-rke2-lab'
 BRIDGE = 'virbr-rke2'
-NAMES = ('rke2-r9-cp01', 'rke2-r9-cp02', 'rke2-r9-cp03', 'rke2-r9-worker01')
+NAMES = tuple(f'rke2-node{i:02}' for i in range(1, 5))
+LEGACY_NAMES = ('rke2-r9-cp01', 'rke2-r9-cp02', 'rke2-r9-cp03', 'rke2-r9-worker01')
+OWNED_NAMES = NAMES + LEGACY_NAMES
 DEFAULT_RELEASE = ROOT / 'lab/artifacts/packer/release-universal-20261017/release.json'
 HEALTH = 'sudo /usr/local/libexec/autonomous-rke2/host-agent -health'
 KUBECTL = 'sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml'
@@ -90,9 +92,9 @@ class Lab:
                 for node in xml.findall('devices/interface/source'))
             uses_filter = any(node.get('filter') == FILTER
                               for node in xml.findall('devices/interface/filterref'))
-            if name not in NAMES and (uses_disks or uses_network or uses_filter):
+            if name not in OWNED_NAMES and (uses_disks or uses_network or uses_filter):
                 raise ImageError(f'unrelated VM {name} uses lab resources; refusing')
-            if name in NAMES:
+            if name in OWNED_NAMES:
                 disks = xml.findall("devices/disk[@device='disk']/source")
                 if not disks or any(not self.inside(node.get('file')) for node in disks):
                     raise ImageError(f'{name} has a disk outside lab directory; refusing')
@@ -112,7 +114,7 @@ class Lab:
 
     def plan(self, inventory):
         print('Connection: qemu:///system')
-        print('VMs: ' + (', '.join(name for name in NAMES if name in inventory['domains']) or '(none)'))
+        print('VMs: ' + (', '.join(name for name in OWNED_NAMES if name in inventory['domains']) or '(none)'))
         print(f'Disk/settings directory: {self.pool} (exists: {self.pool.exists()})')
         print('Pools: ' + (', '.join(name for name, xml in inventory['pools'].items()
                                   if self.inside(xml.findtext('target/path'))) or '(none)'))
@@ -131,13 +133,13 @@ class Lab:
                 errors.append(f'{label}: {exc}')
 
         # Never remove disks until every member is stopped and undefined.
-        for name in NAMES:
+        for name in OWNED_NAMES:
             if name in inventory['running']:
                 attempt(name, lambda name=name: virsh('destroy', name))
         if errors:
             raise ImageError('Stop failed; disks retained. Retry destroy.\n' + '\n'.join(errors))
         remaining = set(virsh('list', '--all', '--name').split())
-        for name in NAMES:
+        for name in OWNED_NAMES:
             if name in remaining:
                 flags = ['--managed-save', '--snapshots-metadata', '--checkpoints-metadata']
                 xml = inventory['domains'][name]
@@ -150,7 +152,7 @@ class Lab:
             raise ImageError('Undefine failed; disks retained. Retry destroy.\n' + '\n'.join(errors))
         refreshed = self.inventory()
         self.check_ownership(refreshed)
-        if any(name in refreshed['domains'] for name in NAMES):
+        if any(name in refreshed['domains'] for name in OWNED_NAMES):
             raise ImageError('a lab VM still exists; files retained; retry destroy')
 
         def remove_definition(kind, name):
@@ -182,14 +184,23 @@ class Lab:
     def save(self, state):
         write_private(self.state_path, json.dumps(state, indent=2) + '\n')
 
+    def deployment_names(self, count):
+        if not self.state_path.exists():
+            return NAMES[:count]
+        state = json.loads(self.state_path.read_text())
+        if state.get('count') != count:
+            raise ImageError('existing deployment uses a different release/node count; destroy it first')
+        names = tuple(node['name'] for node in state['nodes'])
+        if names not in (NAMES[:count], LEGACY_NAMES[:count]):
+            raise ImageError('invalid saved node list; refusing')
+        return names
+
     def load_or_initialize(self, release, release_hash, count, inventory):
         if self.state_path.exists():
             state = json.loads(self.state_path.read_text())
             if (state.get('schema'), state.get('release_sha256'), state.get('count')) != (1, release_hash, count):
                 raise ImageError('existing deployment uses a different release/node count; destroy it first')
-            expected = [NAMES[i] for i in range(count)]
-            if [node['name'] for node in state['nodes']] != expected:
-                raise ImageError('invalid saved node list; refusing')
+            self.deployment_names(count)
             for spec in state['nodes']:
                 for key, suffix in (('disk', '.qcow2'), ('nvram', '.vars.fd'),
                                     ('seed', '.iso'), ('serial', '.serial.log')):
@@ -197,7 +208,7 @@ class Lab:
                         raise ImageError('invalid saved node path; refusing')
             print('Resuming existing deployment; retaining disks, identities and enrollment secret.')
         else:
-            if any(name in inventory['domains'] for name in NAMES) or (
+            if any(name in inventory['domains'] for name in OWNED_NAMES) or (
                 self.pool.exists() and any(self.pool.iterdir())
             ):
                 raise ImageError('old/partial unmanaged lab remains; run destroy.py first')
@@ -210,7 +221,7 @@ class Lab:
                           'disk_gib': 60, 'boot_requested': False} for i in range(count)]}
             self.save(state)
         for name, xml in inventory['domains'].items():
-            if name in NAMES:
+            if name in OWNED_NAMES:
                 spec = next((node for node in state['nodes'] if node['name'] == name), None)
                 if not spec or xml.findtext('uuid') != spec['uuid']:
                     raise ImageError(f'{name} is not from saved deployment; refusing')
@@ -225,13 +236,14 @@ class Lab:
         return state
 
     def check_capacity(self, count, inventory):
-        new_disks = sum(not (self.pool / (name + '.qcow2')).exists() for name in NAMES[:count])
+        names = self.deployment_names(count)
+        new_disks = sum(not (self.pool / (name + '.qcow2')).exists() for name in names)
         parent = self.pool if self.pool.exists() else self.pool.parent
         if shutil.disk_usage(parent).free < (60 * new_disks + 8) * GIB:
             raise ImageError('insufficient disk space: reserve 60 GiB per new disk plus 8 GiB')
         available = next(int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
                          if line.startswith('MemAvailable:'))
-        starting = sum(name not in inventory['running'] for name in NAMES[:count])
+        starting = sum(name not in inventory['running'] for name in names)
         if available < (8 * starting + 8) * GIB:
             raise ImageError('insufficient available RAM: 8 GiB per stopped/new VM plus 8 GiB host reserve')
         forbidden = [ipaddress.ip_network(cidr) for cidr in ('192.168.250.0/24', '10.42.0.0/16', '10.43.0.0/16')]

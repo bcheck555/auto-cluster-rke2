@@ -164,12 +164,15 @@ class LifecycleTests(unittest.TestCase):
             self.create(4)
         state = json.loads(self.lab.state_path.read_text())
         self.assertTrue(state['complete'])
+        self.assertEqual([node['name'] for node in state['nodes']],
+                         ['rke2-node01', 'rke2-node02', 'rke2-node03', 'rke2-node04'])
         self.assertEqual(len({node['uuid'] for node in state['nodes']}), 4)
         self.assertEqual(len({node['mac'] for node in state['nodes']}), 4)
         self.assertEqual(len({node['instance_id'] for node in state['nodes']}), 4)
         for node in state['nodes']:
             seed = self.pool / (node['name'] + '-seed')
             data = json.loads((seed / 'user-data').read_text().split('\n', 1)[1])
+            self.assertEqual(data['hostname'], node['name'])
             self.assertEqual(data['write_files'][0]['content'], state['secret'])
             self.assertEqual(data['runcmd'][-1][-1], 'autonomous-rke2-host-agent.service')
             self.assertNotIn('autonomous-image-validation', json.dumps(data))
@@ -288,6 +291,43 @@ class LifecycleTests(unittest.TestCase):
         self.lab.destroy(self.host.inventory())
         self.assertFalse(self.pool.exists())
         self.assertFalse(self.host.bridge)
+
+    def test_legacy_deployment_resumes_with_saved_names_and_capacity_then_destroys(self):
+        with patch.object(life, 'NAMES', life.LEGACY_NAMES):
+            self.create(4)
+        state = json.loads(self.lab.state_path.read_text())
+        self.host.running.clear()
+        self.create(4)
+        self.assertEqual(set(self.host.domains), set(life.LEGACY_NAMES))
+        self.assertEqual(json.loads(self.lab.state_path.read_text())['nodes'], state['nodes'])
+        self.assertEqual(self.lab.deployment_names(4), life.LEGACY_NAMES)
+        # Resuming must count the existing legacy disks/VMs, rather than allocate
+        # capacity for a second cluster under the new naming scheme.
+        original_read = Path.read_text
+        def read(path, *args, **kwargs):
+            if str(path) == '/proc/meminfo':
+                return 'MemAvailable: 16777216 kB\n'
+            return original_read(path, *args, **kwargs)
+        with patch.object(life.shutil, 'disk_usage') as usage, \
+                patch.object(Path, 'read_text', autospec=True, side_effect=read):
+            usage.return_value.free = 9 * life.GIB
+            self.lab.check_capacity(4, self.host.inventory())
+        self.lab.destroy(self.host.inventory())
+        self.assertFalse(self.host.domains)
+        self.assertFalse(self.pool.exists())
+
+    def test_unmanaged_legacy_vms_are_cleaned_but_not_adopted_by_create(self):
+        self.pool.mkdir()
+        for name in life.LEGACY_NAMES:
+            spec = life.make_spec(name, '192.168.250.11', 'node', self.pool)
+            self.host.domains[name] = ET.fromstring(life.domain_xml(spec))
+            self.host.running.add(name)
+            Path(spec['disk']).write_bytes(b'old lab disk')
+        with self.assertRaisesRegex(life.ImageError, 'unmanaged'):
+            self.create()
+        self.lab.destroy(self.host.inventory())
+        self.assertFalse(self.host.domains)
+        self.assertFalse(self.pool.exists())
 
     def test_inactive_auxiliary_pool_inside_lab_is_also_removed(self):
         self.pool.mkdir()
