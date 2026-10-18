@@ -15,7 +15,7 @@ hostname_prefix: dev-node
 
 # Signed universal release.json. Relative paths resolve from THIS YAML file's
 # directory, not the shell's working directory. The same disk serves every role.
-release: ../lab/artifacts/packer/release-universal-20261017/release.json
+release: ../lab/artifacts/packer/release-scaling-20261018/release.json
 
 # Currently supported: 3 = three servers; 4 = three servers plus one worker.
 # Role assignment is automatic; per-node roles/seed addresses are not inputs.
