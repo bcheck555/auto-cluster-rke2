@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"autonomous-rke2/internal/bootstrap"
-	"autonomous-rke2/internal/identity"
+	"auto-cluster-rke2/internal/bootstrap"
+	"auto-cluster-rke2/internal/identity"
 )
 
 const clusterIdentityPath = "/api/v1/namespaces/kube-system/configmaps/autonomous-rke2-identity"

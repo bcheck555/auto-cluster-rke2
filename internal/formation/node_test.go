@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"autonomous-rke2/internal/hostagent"
-	"autonomous-rke2/internal/identity"
-	"autonomous-rke2/internal/state"
+	"auto-cluster-rke2/internal/hostagent"
+	"auto-cluster-rke2/internal/identity"
+	"auto-cluster-rke2/internal/state"
 )
 
 type fakeRuntime struct {

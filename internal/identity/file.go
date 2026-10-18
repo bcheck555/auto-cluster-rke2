@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	"autonomous-rke2/internal/durable"
+	"auto-cluster-rke2/internal/durable"
 )
 
 var (

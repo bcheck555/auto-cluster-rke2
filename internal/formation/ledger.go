@@ -5,7 +5,7 @@ import (
 	"crypto/ed25519"
 	"net"
 
-	"autonomous-rke2/internal/identity"
+	"auto-cluster-rke2/internal/identity"
 )
 
 type Catalog struct {

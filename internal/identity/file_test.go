@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"autonomous-rke2/internal/durable"
+	"auto-cluster-rke2/internal/durable"
 )
 
 func TestFileStoreSurvivesRestart(t *testing.T) {

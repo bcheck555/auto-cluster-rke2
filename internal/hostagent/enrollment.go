@@ -6,7 +6,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 
-	"autonomous-rke2/internal/identity"
+	"auto-cluster-rke2/internal/identity"
 )
 
 type Enrollment struct {

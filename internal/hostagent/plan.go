@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"autonomous-rke2/internal/bootstrap"
+	"auto-cluster-rke2/internal/bootstrap"
 )
 
 const RKE2Version = "v1.37.1+rke2r1"

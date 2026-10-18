@@ -13,7 +13,7 @@ import (
 	"sync"
 	"testing"
 
-	"autonomous-rke2/internal/hostagent"
+	"auto-cluster-rke2/internal/hostagent"
 )
 
 type transportFunc func(*http.Request) (*http.Response, error)

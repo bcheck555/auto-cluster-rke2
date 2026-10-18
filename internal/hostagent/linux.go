@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"autonomous-rke2/internal/bootstrap"
+	"auto-cluster-rke2/internal/bootstrap"
 )
 
 const configPath = "/etc/rancher/rke2/config.yaml"

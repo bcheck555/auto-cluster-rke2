@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"autonomous-rke2/internal/identity"
+	"auto-cluster-rke2/internal/identity"
 )
 
 type httpFixture struct {

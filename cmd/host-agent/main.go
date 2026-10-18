@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"autonomous-rke2/internal/formation"
+	"auto-cluster-rke2/internal/formation"
 )
 
 func main() { os.Exit(run()) }

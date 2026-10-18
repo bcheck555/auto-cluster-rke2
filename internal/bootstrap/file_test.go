@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"autonomous-rke2/internal/durable"
-	"autonomous-rke2/internal/identity"
+	"auto-cluster-rke2/internal/durable"
+	"auto-cluster-rke2/internal/identity"
 )
 
 func TestAuthorityRequiresInitializationAndConsumesOnce(t *testing.T) {

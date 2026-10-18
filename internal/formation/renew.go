@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"autonomous-rke2/internal/hostagent"
+	"auto-cluster-rke2/internal/hostagent"
 )
 
 func (n *Node) renewReader(ctx context.Context, s State, servers []Peer) error {

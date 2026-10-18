@@ -5,7 +5,7 @@ Signed-image replacement update (2026-10-17): three server-profile VMs passed bo
 Phase 1 update (2026-10-16): owner approved apply and functional testing. The three Rocky guests, isolated network/pool, and per-NIC IPv6 filter are deployed and validated. Existing resource definitions were preserved; `/var` retained approximately 606 GiB available. See [Phase 1 results](phase1-lab-results.md). The assessment below is the pre-apply baseline, including its then-current inventory and approval gates.
 
 Assessment timestamp: 2026-10-16 16:30 EDT (system clock)
-Workspace: `/var/github/auto-cluster`
+Workspace: `/var/github/auto-cluster-rke2` (renamed from `/var/github/auto-cluster`).
 
 ## Host identity and virtualization
 

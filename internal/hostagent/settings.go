@@ -10,11 +10,11 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"autonomous-rke2/internal/bootstrap"
-	"autonomous-rke2/internal/discovery"
-	"autonomous-rke2/internal/durable"
-	"autonomous-rke2/internal/identity"
-	"autonomous-rke2/internal/state"
+	"auto-cluster-rke2/internal/bootstrap"
+	"auto-cluster-rke2/internal/discovery"
+	"auto-cluster-rke2/internal/durable"
+	"auto-cluster-rke2/internal/identity"
+	"auto-cluster-rke2/internal/state"
 )
 
 type Settings struct {

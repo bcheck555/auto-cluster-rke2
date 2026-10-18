@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"autonomous-rke2/internal/durable"
-	"autonomous-rke2/internal/identity"
+	"auto-cluster-rke2/internal/durable"
+	"auto-cluster-rke2/internal/identity"
 )
 
 // HostPolicy is explicit enrollment, not permission inferred from discovery.

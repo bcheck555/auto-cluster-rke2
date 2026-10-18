@@ -1,10 +1,14 @@
-# Autonomous RKE2 Cluster
+# auto-cluster-rke2
 
 One bootable Rocky Linux image for every node, on VMs or physical hosts. The
 first node creates a single-server RKE2 cluster; later nodes discover and join
 it. The next two become servers, subsequent nodes become workers. Formation,
 enrollment, and endpoint failover run on the nodes. No external authority,
 database, management server, or load balancer is required at runtime.
+
+The repository folder and Go module are named `auto-cluster-rke2`. Runtime
+service names, configuration paths and protocol identifiers retain their
+`autonomous-rke2` names for compatibility with existing images and clusters.
 
 Boot the first node alone and wait until healthy before starting additional
 nodes. This first-node-first design assumes working IPv4 multicast on one L2
@@ -48,7 +52,7 @@ reconnect SSH first to clear its `set -e`/`set -u` settings. The scripts change
 no shell settings and always target local `qemu:///system`.
 
 ```bash
-cd /home/checkb/repos/github/auto-cluster
+cd /home/checkb/repos/github/auto-cluster-rke2
 cp -n clusters/cluster.yaml.example clusters/dev.yaml
 # Edit dev.yaml: select a unique cluster, hostname prefix, network and subnet.
 # The template describes dev; change these fields for additional clusters.

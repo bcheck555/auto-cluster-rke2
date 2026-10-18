@@ -17,11 +17,11 @@ import (
 	"syscall"
 	"time"
 
-	"autonomous-rke2/internal/bootstrap"
-	"autonomous-rke2/internal/discovery"
-	"autonomous-rke2/internal/durable"
-	"autonomous-rke2/internal/hostagent"
-	"autonomous-rke2/internal/identity"
+	"auto-cluster-rke2/internal/bootstrap"
+	"auto-cluster-rke2/internal/discovery"
+	"auto-cluster-rke2/internal/durable"
+	"auto-cluster-rke2/internal/hostagent"
+	"auto-cluster-rke2/internal/identity"
 )
 
 type settings struct {

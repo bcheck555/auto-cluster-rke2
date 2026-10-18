@@ -18,9 +18,9 @@ import (
 	"strings"
 	"testing"
 
-	"autonomous-rke2/internal/bootstrap"
-	"autonomous-rke2/internal/durable"
-	"autonomous-rke2/internal/identity"
+	"auto-cluster-rke2/internal/bootstrap"
+	"auto-cluster-rke2/internal/durable"
+	"auto-cluster-rke2/internal/identity"
 )
 
 type probeFunc func(context.Context, string, string) (bootstrap.Advertisement, error)

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"autonomous-rke2/internal/durable"
-	"autonomous-rke2/internal/identity"
+	"auto-cluster-rke2/internal/durable"
+	"auto-cluster-rke2/internal/identity"
 )
 
 var ErrGrantNotFound = errors.New("grant not found for host and operation")

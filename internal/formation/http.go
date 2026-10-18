@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"time"
 
-	"autonomous-rke2/internal/durable"
+	"auto-cluster-rke2/internal/durable"
 )
 
 type Service struct {

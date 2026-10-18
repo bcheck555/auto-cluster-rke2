@@ -10,8 +10,8 @@ import (
 	"net/url"
 	"time"
 
-	"autonomous-rke2/internal/bootstrap"
-	"autonomous-rke2/internal/durable"
+	"auto-cluster-rke2/internal/bootstrap"
+	"auto-cluster-rke2/internal/durable"
 )
 
 const identityPath = "/v1/cluster-identity"

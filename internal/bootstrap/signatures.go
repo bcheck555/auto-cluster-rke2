@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"autonomous-rke2/internal/identity"
+	"auto-cluster-rke2/internal/identity"
 )
 
 var (

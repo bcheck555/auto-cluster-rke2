@@ -1,4 +1,4 @@
-module autonomous-rke2
+module auto-cluster-rke2
 
 go 1.27.0
 

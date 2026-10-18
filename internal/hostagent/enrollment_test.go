@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"autonomous-rke2/internal/identity"
+	"auto-cluster-rke2/internal/identity"
 )
 
 func TestEnrollmentCSRUsesExistingPersistentKey(t *testing.T) {

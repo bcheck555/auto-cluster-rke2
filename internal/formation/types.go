@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"autonomous-rke2/internal/hostagent"
+	"auto-cluster-rke2/internal/hostagent"
 )
 
 var (

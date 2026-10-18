@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"autonomous-rke2/internal/bootstrap"
-	"autonomous-rke2/internal/identity"
-	"autonomous-rke2/internal/state"
+	"auto-cluster-rke2/internal/bootstrap"
+	"auto-cluster-rke2/internal/identity"
+	"auto-cluster-rke2/internal/state"
 )
 
 func nonce(t *testing.T) string {

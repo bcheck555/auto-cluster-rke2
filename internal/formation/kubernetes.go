@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"autonomous-rke2/internal/hostagent"
+	"auto-cluster-rke2/internal/hostagent"
 )
 
 const catalogPath = "/api/v1/namespaces/kube-system/configmaps/autonomous-rke2-membership"
