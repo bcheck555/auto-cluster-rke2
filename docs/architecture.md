@@ -1,10 +1,14 @@
 # Universal node architecture
 
+## Deployment model
+
 The deployment unit is one disk image. Every clone contains both pinned RKE2
 role packages, offline container archives and chart overrides, the node agent,
 and its enabled systemd unit. Roles are selected at runtime. A generic sealed
 image contains no enrollment secret, host private key, formation journal,
 registration tokens, cluster certificates, or datastore state.
+
+## Components and locations
 
 Each node runs these components:
 
@@ -22,6 +26,8 @@ Each node runs these components:
 No component runs on a separate authority or management host. The hypervisor
 and connected artifact build/signing tools are outside the runtime cluster.
 Physical hosts run the same userspace and formation code.
+
+## Initial formation and enrollment
 
 The first node waits through its startup grace and a complete authenticated
 discovery cycle. If no cluster is advertised, it persists a new cluster UUID,
@@ -47,6 +53,8 @@ client load balancer retains discovered server addresses across reboots.
 Read-only API health traffic uses a node-local TCP proxy with end-to-end cluster
 TLS. No external VIP, DNS seed, or load balancer is required.
 
+## Restart and failure boundaries
+
 On reboot, identity and journal load before discovery starts. The node restarts
 its recorded native role with its existing data and credentials, uses saved
 server addresses while discovery recovers, and checks recorded Node/etcd IDs.
@@ -57,6 +65,8 @@ This design assumes the first node is booted alone, then additional nodes join
 the reachable cluster. ID ordering reduces races among mutually visible fresh
 peers; it cannot guarantee one cluster across network partitions or hidden
 groups of fresh nodes. See [discovery assumptions](discovery-decision.md).
+
+## Network behavior
 
 NIC names may differ between nodes. Automatic selection ignores RKE2's CNI
 interfaces after startup. Because Flannel chart arguments are cluster-wide,
@@ -70,3 +80,10 @@ The node also maintains a link route for its fixed Kubernetes service CIDR,
 with a distinct metric. This lets kube-proxy perform initial OUTPUT routing
 on isolated hosts without a default gateway. Default routes remain under the
 site network configuration; the acceptance seed does not inject this route.
+
+## Related information
+
+- [Deploy the universal image](universal-node.md)
+- [Operate the libvirt lab](lab-lifecycle.md)
+- [Trust boundaries](trust-and-threat-model.md)
+- [Outstanding work](open-questions.md)

@@ -1,147 +1,142 @@
-# Deploying the universal node image
+# Deploy the universal node image
 
-Every machine boots the same disk image. A single deployment shares one private
-enrollment secret. The first machine forms a single-server cluster, the next
-two join as servers, and later machines join as workers. No per-node role,
-cluster ID, authority address, registration endpoint, or health-reader private
-key is provisioned.
+Use the same sealed image for every VM or physical host. Supply common enrollment
+trust and unique machine/network identities, then boot the first new node alone.
+The next two nodes join as servers; later nodes become workers. No per-node role,
+cluster UUID, seed server address, or grant is entered.
 
-## Requirements
+For the supported local KVM automation, use [lab lifecycle](lab-lifecycle.md).
+This guide describes provisioning requirements for other hypervisors and physical
+hosts. Physical hardware acceptance is still pending.
 
-- Linux amd64 guests/hosts with persistent disks and the pinned Rocky 9.8 image.
-- One reachable IPv4 subnet on an L2 segment with multicast and unicast between
-  nodes. It must not overlap pod/service networks `10.42.0.0/16` and `10.43.0.0/16`.
-- A unique, stable IPv4 address on each clone. DHCP reservations or static
-  networking are suitable; address/interface changes after formation halt.
-- Exactly one suitable interface/address, or `Interface` explicitly selected
+## Before you begin
+
+- Obtain a signed universal release and verify it against independently trusted
+  signing material. See [build and verification](offline-images.md) and
+  [recorded acceptance](universal-image-results.md).
+- Use Linux amd64 hosts/guests with persistent disks and the pinned Rocky 9.8 image.
+- Provide one IPv4 subnet on a shared L2 segment with multicast and unicast. It
+  must not overlap pods `10.42.0.0/16` or services `10.43.0.0/16`.
+- Assign each clone a unique stable IPv4 address, using static configuration or
+  DHCP reservations. Address/interface changes after formation halt convergence.
+- Provide exactly one suitable interface/address, or explicitly select `Interface`
   in common image settings. Multiple NICs are not guessed from their order.
-- Correct clocks from the hypervisor/RTC or site time infrastructure; signed
+- Keep clocks correct using hypervisor/RTC or site time infrastructure; discovery
   messages have a bounded freshness window.
-- Boot the first node alone and wait for independent health before additional
-  boots. ID ordering is not a guarantee across partitions or hidden peers.
+- Permit the node traffic below. Node images have firewalld installed and disabled;
+  enforce site boundaries in the surrounding network.
 
-Allow deployment traffic within its network: UDP 9444 multicast plus unicast
-replies to probe sockets, TCP 9443 enrollment, RKE2 TCP 9345/6443, etcd TCP
-2379/2380 between servers, kubelet TCP 10250, and Flannel VXLAN UDP 4789
-(the bundled RKE2 chart's backend port).
-Loopback TCP 7443 is the local API health proxy. Initial registration uses a
-discovered server on native TCP 9345; RKE2 then manages its own client load
-balancer and cached server addresses. Registration ports are never translated.
-The pinned RKE2 etcd HTTPS health/API gateway uses loopback TCP 2382.
-The node installs its own service-CIDR link route, so isolated nodes need no
-default gateway for kube-proxy's initial route lookup.
-No external DNS, load balancer, lease server, or bootstrap server is required.
-The node image keeps firewalld installed and disabled; enforce site boundaries
-at the surrounding network. External package/image downloads are not used.
+| Traffic | Purpose |
+| --- | --- |
+| UDP 9444, multicast `239.192.42.42` and unicast replies to probe sockets | Authenticated discovery |
+| TCP 9443 between nodes | Enrollment on healthy servers |
+| TCP 9345 / 6443 | Native RKE2 registration / Kubernetes API |
+| TCP 2379 / 2380 between servers | Embedded etcd |
+| TCP 10250 | Kubelet |
+| UDP 4789 between nodes | Bundled Flannel VXLAN backend |
 
-## Build and acceptance
+Loopback TCP 7443 is the local API health proxy; loopback TCP 2382 is the pinned
+RKE2 etcd health/API gateway. RKE2 registration uses discovered native port 9345,
+then its own client load balancer and cached server addresses. Ports are not
+translated. A node-maintained service-CIDR route permits isolated operation
+without a default gateway. External DNS, bootstrap servers, load balancers,
+and package/image downloads are not required at runtime.
 
-See [offline image workflow](offline-images.md) for artifact signing and cached
-inputs. In a new output generation, run:
+## Prepare and boot nodes
 
-```sh
-python3 -B lab/packer/images.py lock --output /path/to/new-input
-python3 -B lab/packer/images.py build --input /path/to/new-input/input.json --output /path/to/new-build
-sudo -E python3 -B lab/packer/images.py test --input /path/to/new-build/candidate.json --output /path/to/new-build/validation.json
-python3 -B lab/packer/images.py publish --input /path/to/new-build/candidate.json --output /path/to/new-release
+1. Clone only the sealed `node.qcow2`, never an initialized node disk. Give each
+   VM its own persistent writable disk, unique MAC, machine identity, IPv4 address,
+   and NVRAM. Physical deployments use the signed raw export described below.
+
+2. Generate one random 32-byte enrollment key as 64 hex characters. Securely
+   supply the same key on every node at `/etc/autonomous-rke2/enrollment-secret`,
+   root-owned mode `0600`. Trailing newlines and hex case are normalized;
+   placeholders are rejected. Do not generate a different key on each node.
+
+   The [cloud-init fragment](../configs/site-cloud-init.example.yaml) shows the
+   file and service restart. Replace its placeholder and combine it with site
+   hostname/network settings. A protected local NoCloud ISO/disk or customization
+   step requires no external cloud-init server. Never commit real secrets or
+   initialized disks.
+
+3. Preserve the image-generated `/etc/autonomous-rke2/node.json`: it contains
+   actual offline payload hashes. Do not replace them with documentation values.
+   The node service is enabled but conditional on config and secret. Native
+   RKE2 units remain masked/stopped until the node agent selects a role.
+
+4. Boot the first new node alone. Its default startup grace is 30 seconds;
+   image imports and control-plane readiness take additional time. On its console:
+
+   ```bash
+   sudo systemctl status autonomous-rke2-host-agent.service
+   sudo journalctl -u autonomous-rke2-host-agent.service -n 100 --no-pager
+   sudo /usr/local/libexec/autonomous-rke2/host-agent -health
+   ```
+
+   Wait for a successful health check. It observes the API, immutable marker,
+   Node readiness, and local etcd for servers; saved journal status alone does
+   not establish health.
+
+5. Boot additional prepared nodes. Reservations serialize joins; no manual token
+   or role copying is needed. Servers enroll through discovered healthy servers;
+   workers receive only worker credentials and limited read-only health access.
+   Check each node's health and expected cluster membership.
+
+### Verify membership
+
+On a healthy server, use the bundled client and native kubeconfig:
+
+```bash
+sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide
 ```
 
-To reuse verified cached downloads, use `lock --from-lock /path/to/old/input.json
---output /path/to/new-input` instead of a fresh connected lock. This creates a
-new signed generation, combines the two cached role RPM selections, and adds
-the current node binary, unit, and public Go sources. Existing locks/releases
-are never rewritten. Compiling the agent occurs during input preparation;
-offline Packer needs no Go toolchain or network access.
+Expect the intended nodes to be `Ready`, with the first three admitted nodes as
+servers and subsequent nodes as workers. Node names need not encode roles.
+Authenticated discovery cannot distinguish an empty network from a partition;
+first-node-alone is a formation prerequisite, not a global election guarantee.
 
-Output includes an OS base and **one runtime image**, `node.qcow2`. Both native
-RKE2 units remain masked/stopped in the sealed image. The node service is enabled
-but conditional on the common configuration and enrollment secret. The
-generated `/etc/autonomous-rke2/node.json` contains actual offline payload hashes;
-do not replace those with documentation placeholders.
+## Export for physical hosts
 
-Candidate acceptance boots four clones from the same node disk. It supplies
-only an ephemeral common enrollment secret, waits for the first healthy node
-before launching each additional clone, verifies server/server/server/worker
-assignment, then reboots all four and compares cluster, host, Node and etcd
-identities. It also checks three voters, offline DNS, and cross-node service/pod
-connectivity. Publication requires signed formation evidence for that disk.
-The validator reserves capacity for four disposable 8-GiB guests plus retained
-lab allocations and QEMU overhead. If disk reserves prevent temporary test
-storage, it can use a size-limited tmpfs after reserving its entire maximum
-against available RAM as well. Both host reserves still apply. The owned mount
-is removed after disposable guests stop. Existing lab guests are not modified.
+From the checkout root, with signing credentials and the verified published
+release available, choose a new output directory:
 
-## Supply one deployment secret
-
-Generate 32 random bytes once as 64-character hex text, and securely inject the same secret
-on every clone at `/etc/autonomous-rke2/enrollment-secret`, root-owned mode 0600.
-Trailing newlines and hex letter case are normalized. Documentation placeholders
-are rejected. Do not generate an independent secret
-on each node. A protected site customization or NoCloud `write_files` seed can
-supply this common file; the secret is not part of the generic signed image.
-
-The [cloud-init fragment](../configs/site-cloud-init.example.yaml) shows the file
-and service restart. Replace its placeholder before use and combine with your
-normal hostname/network configuration. No external cloud-init server is
-necessary: a local NoCloud disk/ISO or protected customization works. Never
-commit the real secret or initialized node disk.
-
-Start the first node alone. Its default startup grace is 30 seconds, followed
-by normal RKE2 readiness checks; image imports and control-plane startup can
-take longer. Check it locally or through the guest console:
-
-```sh
-systemctl status autonomous-rke2-host-agent.service
-journalctl -u autonomous-rke2-host-agent.service
-/usr/local/libexec/autonomous-rke2/host-agent -health
+```bash
+python3 -B lab/packer/images.py export --input /path/to/release/release.json --output /path/to/new-raw-export
 ```
 
-`-health` observes the API, immutable marker, Node readiness and local etcd for
-servers; a cached journal is insufficient. Once this succeeds, boot additional
-clones. Membership reservations serialize concurrent joins. No manual role or
-token copying is needed. Servers enroll through any discovered healthy server;
-workers receive only worker credentials and a limited read-only certificate.
+This produces `node.raw` and signed `export.json`, checks geometry, and compares
+raw contents against the source disk. It writes a new directory, not a block
+device. Before site-specific imaging, verify signatures and identify the intended
+target disk; imaging overwrites that disk. Supply the same enrollment file and
+local networking customization afterward.
 
-## VM and physical disk formats
+Raw export does not establish bare-metal compatibility. UEFI, NIC/storage
+drivers, and cloud-init behavior still need representative hardware tests.
 
-Use `node.qcow2` as a read-only template with distinct persistent per-VM disks,
-unique machine identity, MAC, address, and NVRAM. Clone only a sealed image,
-never an initialized node. The lab provisioner accepts the universal derived
-profile with `role: auto`; shared-secret injection is supplied separately through
-the site customization/seed. Existing lab configs/releases remain historical.
+## Restart existing nodes
 
-For physical hosts, export the published node disk:
+Preserve `/var/lib/autonomous-rke2` identity, journal, and credentials, and
+`/var/lib/rancher/rke2` data. On reboot, the node restores its recorded role and
+cluster, uses cached server endpoints while discovery recovers, and checks saved
+Node/etcd IDs. Native RKE2 units are not an independent boot path.
 
-```sh
-python3 -B lab/packer/images.py export --input /path/to/new-release/release.json --output /path/to/raw-export
-```
+Restart enough existing voters for etcd quorum. The first-node-alone rule applies
+to new formation, not recovery of an existing three-server cluster.
 
-This produces `node.raw` and signed `export.json`, verifies geometry and compares
-raw contents with the source disk. It writes a new directory, never a block
-device. Verify signatures and target-disk ownership before imaging a physical
-disk, then provide the same common enrollment file and local networking seed.
-UEFI/boot drivers, NIC drivers, storage and cloud-init behavior on representative
-hardware still need acceptance testing. Raw export alone does not establish
-bare-metal compatibility.
-
-## Restart and reconciliation
-
-Identity and formation state live under `/var/lib/autonomous-rke2`; credentials
-are private files beneath it. RKE2 data remains under `/var/lib/rancher/rke2`.
-Preserve both across reboot. The service restores the recorded role and cluster
-before advertising, uses persisted server endpoints while discovery recovers,
-and starts only that role with the same existing data. It does not enable the
-native RKE2 unit as an independent boot path.
-
-Missing completed data, changed address/interface, deployment fingerprint or
-runtime policy, multiple cluster UUIDs, and changed Node/etcd identities stop
-convergence. Pending reservations remain assigned to their original identity;
-they are not freed by a timeout. A failed join during the two-server stage may
-temporarily prevent quorum until that same node resumes. Do not delete journals
-or reset etcd to make discovery succeed.
+Missing completed data, changed address/interface, fingerprint, or runtime policy,
+multiple cluster UUIDs, and changed Node/etcd IDs stop convergence. Pending joins
+remain reserved for their original identity; they never expire into reusable
+slots. Resume the same node. A failure during the two-server stage may prevent
+quorum until that node returns. Do not erase journals or reset etcd to force a join.
 
 Reader and enrollment TLS certificates renew under the same host keys. Site-key
-and cluster-CA rotation, abandoned reservation reconciliation, node replacement,
-and upgrades need explicit future procedures. There is no automated promotion,
-member removal, quorum reset, disk cleanup or fencing. See
-[remaining work](open-questions.md).
+and CA rotation, abandoned reservation reconciliation, replacement, and upgrades
+need future procedures. Automatic promotion, removal, quorum reset, runtime disk
+cleanup, and fencing are not implemented. Lab teardown is a separate host-side
+operation.
+
+## Related information
+
+- [Architecture](architecture.md) and [trust boundaries](trust-and-threat-model.md)
+- [Troubleshooting](troubleshooting.md)
+- [Remaining work](open-questions.md)

@@ -29,10 +29,11 @@ bridge address. The authority's separate HTTPS path also needs approved filterin
 
 The existing VM network has no host L3 address, DHCP, or forwarding. Resolve that
 deployment decision and provision trust before running either service in the
-lab. [Existing approval gates](open-questions.md#approval-gates) still apply to
-production bootstrap, expansion, and host package/service changes. No expansion
-to five VMs, replacement, cleanup, fencing, or quorum reset is authorized by
-building these binaries.
+lab. At this prototype stage, production bootstrap, expansion, and host
+package/service changes required a separately reviewed rollout. Building these
+binaries did not authorize expansion to five VMs, replacement, cleanup, fencing,
+or quorum reset. These are historical rollout boundaries; use the current
+[lab lifecycle](lab-lifecycle.md) for universal-image deployment instructions.
 
 ## State transitions and interruption
 

@@ -1,8 +1,9 @@
 # Remaining validation and design work
 
-- Build and run the new four-clone acceptance gate; local tests do not validate
-  guest SELinux labeling, multicast switches, coinstalled RPM behavior, or RKE2
-  boot ordering end to end.
+- Repeat the four-clone acceptance gate for each new candidate. The recorded
+  universal release has passed it; see [validation evidence](universal-image-results.md).
+  Local unit tests alone do not validate guest SELinux labeling, multicast
+  switches, coinstalled RPM behavior, or RKE2 boot ordering end to end.
 - Validate raw-image boot and drivers on physical hosts. Disk export exists;
   automatic disk selection/flashing is intentionally not part of node startup.
 - Define manual reconciliation for abandoned membership reservations. Pending
@@ -13,7 +14,9 @@
 - Define production network isolation and NetworkPolicy behavior. Current
   Flannel policy preserves the existing offline image baseline.
 - Validate larger deployments and discovery bounds. Current probes accept at
-  most 64 peers; this implementation is intended for small clusters.
+  most 64 peers; the 1,024-member catalog limit is a data-structure ceiling,
+  not evidence of deployment testing at that size. Recorded runtime acceptance
+  covers four nodes.
 - Define fencing-backed member replacement and disaster recovery separately.
   No quorum reset, member removal or promotion is performed automatically.
 

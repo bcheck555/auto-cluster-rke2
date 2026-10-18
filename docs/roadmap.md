@@ -11,6 +11,10 @@ Implemented universal-image path:
 - Universal image package closure, enabled boot service, sealed-state checks,
   signed raw export, and four-clone candidate validation/publication gate.
 - Local controller, auth, concurrency, endpoint failover, and image-contract tests.
+- Resumable libvirt create/destroy, role-neutral names, named isolated clusters,
+  subnet/collision checks, configurable node counts, and public YAML plus
+  preserved private `.env` inputs. See [lab lifecycle](lab-lifecycle.md) and
+  [configuration reference](cluster-config.md).
 
 The fresh universal image passed offline builds and four-clone libvirt
 acceptance: first-alone bootstrap, automatic server/server/worker joins,

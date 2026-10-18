@@ -1,4 +1,4 @@
-# Offline images
+# Build and publish offline images
 
 Current builds produce `os.qcow2` plus one universal `node.qcow2`. The node
 image coinstalls both RKE2 roles, contains the agent binary and enabled boot
@@ -8,9 +8,98 @@ four clones from the same disk, verifies automatic formation and reboot, and
 gates publication on signed evidence for that image. A published node disk can
 be exported as signed raw format without writing a physical device.
 
-Follow [universal node build/deployment](universal-node.md) for current commands,
-the common enrollment secret, first-node-first assumptions, and acceptance
-requirements. Existing lab machines and prior signed releases remain untouched.
+Use this procedure to create a new signed universal generation. For deployment,
+use [universal node deployment](universal-node.md) or [lab lifecycle](lab-lifecycle.md).
+Existing lab machines and prior signed releases remain untouched.
+
+## Before you begin
+
+Run from the checkout root. Provide the Go toolchain pinned in `go.mod`, the
+image pipeline's Packer/QEMU tools, artifact signing credentials, and trusted
+verification files. Inspect available options with:
+
+```bash
+python3 -B lab/packer/images.py --help
+```
+
+The project signing fingerprint is
+`F8BE2082B8EF04D441172C055F59BDC3D0E1B573`. Compare it through an independent
+trusted channel. `AUTONOMOUS_IMAGE_TRUST_DIR` selects the verifier directory
+containing `trust.json` and `public.gpg`; private signing material stays under
+`lab/credentials/artifact-signing/gnupg`. Keep it outside releases and guests.
+Do not commit credentials or bypass verification with a replacement public key.
+
+Fresh input preparation needs a connection to obtain verified upstream artifacts.
+Build/test use cached inputs. Acceptance needs system libvirt/KVM and capacity
+for four disposable 8-GiB guests, retained allocations, QEMU overhead, and host
+reserves. It may use owned size-limited tmpfs for temporary storage after
+reserving its full size against available RAM.
+
+## Build a new generation
+
+Replace the `/path/to/new-*` paths with distinct, unused generation directories.
+Do not reuse a published generation directory.
+
+1. Prepare signed inputs:
+
+   ```bash
+   python3 -B lab/packer/images.py lock --output /path/to/new-input
+   ```
+
+   To reuse verified cached downloads, run the following **instead**:
+
+   ```bash
+   python3 -B lab/packer/images.py lock --from-lock /path/to/old/input.json --output /path/to/new-input
+   ```
+
+   Input preparation compiles the current agent and includes its unit and public
+   source snapshot. Offline Packer needs no Go compiler or network connection.
+
+2. Build the candidate:
+
+   ```bash
+   python3 -B lab/packer/images.py build --input /path/to/new-input/input.json --output /path/to/new-build
+   ```
+
+   The result includes an OS base, one universal `node.qcow2`, and a signed
+   `candidate.json`. Both role payloads are included; runtime selects the role.
+
+3. Run candidate acceptance:
+
+   ```bash
+   sudo -E python3 -B lab/packer/images.py test --input /path/to/new-build/candidate.json --output /path/to/new-build/validation.json
+   ```
+
+   Four clones must form server/server/server/worker, reboot with unchanged
+   cluster/host/Node/etcd identities, and pass offline DNS and cross-node service
+   and pod checks. Existing lab guests are not modified. A failure blocks publish.
+
+4. Publish the verified candidate:
+
+   ```bash
+   python3 -B lab/packer/images.py publish --input /path/to/new-build/candidate.json --output /path/to/new-release
+   ```
+
+   Publication requires signed formation evidence for that disk. Lab create
+   verifies the published release against trusted signing material before
+   provisioning. Do not edit published manifests or hashes.
+
+## Export and deploy
+
+For physical imaging, export to another new directory:
+
+```bash
+python3 -B lab/packer/images.py export --input /path/to/new-release/release.json --output /path/to/new-raw-export
+```
+
+Export produces signed `export.json` and `node.raw`, checks geometry, and compares
+raw bytes with the source. It does not write a physical disk and does not prove
+hardware boot compatibility. Continue with [universal deployment](universal-node.md).
+For VM automation, set the public cluster YAML's `release` to the new manifest;
+paths resolve from the YAML directory. Existing deployments require recreation.
+
+See [universal validation evidence](universal-image-results.md) for the recorded
+release and checks already completed.
 
 ## Historical separate-role image and replacement record
 
