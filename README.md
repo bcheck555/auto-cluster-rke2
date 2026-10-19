@@ -35,22 +35,48 @@ and SELinux Enforcing. Node images have firewalld installed and disabled.
 
 ## Get started
 
-For the local KVM/libvirt workflow, check the
-[prerequisites](docs/lab-lifecycle.md#before-you-begin). A signed release and its
-trust files must already exist; create does not download images. For another
-hypervisor or physical hardware, use the [universal deployment guide](docs/universal-node.md).
+### Build and validate the Packer image
 
-Run these commands from a normal SSH shell. Adjust the checkout path if needed.
-The example config describes cluster `dev`; review it before creating resources.
+A fresh clone contains no generated images or signing credentials. Start with
+the [image build prerequisites](docs/offline-images.md#before-you-begin), then
+run these commands from a normal SSH shell. Adjust the checkout path if needed.
+Connected input preparation downloads verified dependencies and initializes a
+local signing identity; the build uses those cached inputs. Acceptance creates
+disposable VMs and must pass before publication. Stop if any command fails.
 
 ```bash
 cd /home/checkb/repos/github/auto-cluster-rke2
+sudo -v
+generation="$(date +%Y%m%d-%H%M%S)"
+artifacts="$PWD/lab/artifacts/packer"
+python3 -B lab/packer/images.py lock --output "$artifacts/input-$generation"
+python3 -B lab/packer/images.py build --input "$artifacts/input-$generation/input.json" --output "$artifacts/candidate-$generation"
+sudo -E python3 -B lab/packer/images.py test --input "$artifacts/candidate-$generation/candidate.json" --output "$artifacts/candidate-$generation/validation.json"
+python3 -B lab/packer/images.py publish --input "$artifacts/candidate-$generation/candidate.json" --output "$artifacts/release-$generation"
+echo "release: ../lab/artifacts/packer/release-$generation/release.json"
+```
+
+Keep the printed `release:` setting for your cluster config. See the
+[full image workflow](docs/offline-images.md#build-a-new-generation) for cached
+rebuilds, signing/trust setup, and optional raw export for physical hosts.
+
+### Create a cluster from the signed image
+
+Check the [KVM/libvirt prerequisites](docs/lab-lifecycle.md#before-you-begin).
+For another hypervisor or physical hardware, use the
+[universal deployment guide](docs/universal-node.md).
+
+The example config describes cluster `dev`; review it before creating resources.
+
+```bash
 cp -n clusters/cluster.yaml.example clusters/dev.yaml
 ```
 
-Edit `clusters/dev.yaml`: choose the release, node count, VM resources, hostname
-prefix, network name, and an unused private subnet. Keep cluster configs together
-so their names and networks can be checked for conflicts.
+Edit `clusters/dev.yaml`: replace its example `release:` value with the setting
+printed above, then choose node count, VM resources, hostname prefix, network
+name, and an unused private subnet. Create consumes the signed release; it does
+not build or download images. Keep cluster configs together so their names and
+networks can be checked for conflicts.
 
 ```bash
 sudo python3 lab/libvirt/create.py --config clusters/dev.yaml --plan
