@@ -16,7 +16,49 @@ from pathlib import Path
 from lab.packer.artifacts import GIB, ImageError, digest
 
 CAPABILITY = 'membership-reconciliation-v1'
+HEALING_CAPABILITY = 'control-self-healing-v1'
 MANAGE = 'sudo /usr/local/libexec/autonomous-rke2/host-agent -manage'
+
+
+def healing_transition(spec, member, catalog):
+    """Verify every generation against quorum-owned historical identity evidence."""
+    generation = spec.get('generation', 0)
+    target = member.get('Generation', 0)
+    if target == generation:
+        return False
+    if target < generation:
+        raise ImageError('live membership generation went backwards')
+    current = {'ID': spec['member_id'], 'Generation': generation,
+               'NodeUID': spec['node_uid'], 'EtcdMemberID': spec['etcd_member_id'],
+               'Address': spec['address'], 'NodeName': spec['node_name']}
+    operations = [op for op in catalog.get('History') or [] if op.get('Phase') == 'completed']
+    if catalog.get('Healing'):
+        operations.append(catalog['Healing'])
+    for expected in range(generation, target):
+        records = []
+        for operation in operations:
+            for field, role in (('Failed', 'agent'), ('Candidate', 'server')):
+                previous = operation.get(field) or {}
+                if previous.get('ID') == current['ID'] and previous.get('Generation', 0) == expected:
+                    records.append((previous, role))
+        if len(records) != 1 or any(records[0][0].get(key, 0 if key == 'Generation' else '') != value
+                                    for key, value in current.items()):
+            raise ImageError('healing generation lacks exact prior ownership evidence')
+        previous, role = records[0]
+        if expected + 1 == target:
+            if member['Role'] != role or member['Address'] != previous['Address']:
+                raise ImageError('healing role/address differs from committed replacement')
+        else:
+            next_records = [op.get(field) for op in operations for field in ('Failed', 'Candidate')
+                            if (op.get(field) or {}).get('ID') == current['ID']
+                            and (op.get(field) or {}).get('Generation', 0) == expected + 1]
+            if len(next_records) != 1:
+                raise ImageError('healing history has a missing or ambiguous generation')
+            current = {key: next_records[0].get(key, 0 if key == 'Generation' else '') for key in current}
+    assignment = (catalog.get('Hosts') or {}).get(spec['member_id']) or {}
+    if assignment.get('Generation') != target or assignment.get('Role') != member['Role']:
+        raise ImageError('live role differs from latest authorized host assignment')
+    return True
 
 
 def control_count(value):
@@ -135,11 +177,20 @@ class Scaling:
 
     def coordinator(self, state, request, *, exclude=None):
         errors = []
-        for spec in state['nodes']:
-            if spec.get('role') != 'server' or spec.get('member_id') == exclude:
+        # A long-unobserved cluster may have promoted every previously recorded
+        # worker. Saved roles prioritize discovery; they do not limit it.
+        candidates = sorted(state['nodes'], key=lambda n: n.get('role') != 'server')
+        for spec in candidates:
+            if spec.get('member_id') == exclude:
                 continue
             try:
+                if request.get('action') != 'status':
+                    observed = self.management(spec, {'action': 'status'})
+                    if state.get('cluster_id') and observed['catalog']['ClusterID'] != state['cluster_id']:
+                        raise ImageError('coordinator belongs to another cluster; refusing mutation')
                 result = self.management(spec, request)
+                if state.get('cluster_id') and result['catalog']['ClusterID'] != state['cluster_id']:
+                    raise ImageError('coordinator belongs to another cluster')
                 self._coordinator = spec
                 return result
             except (ImageError, ValueError, OSError, subprocess.SubprocessError) as exc:
@@ -149,6 +200,10 @@ class Scaling:
     def observe_membership(self, state):
         status = self.coordinator(state, {'action': 'status'})
         catalog = status['catalog']
+        if catalog.get('Healing'):
+            operation = catalog['Healing']
+            raise ImageError(f'self-healing operation {operation["ID"]}: {operation["Phase"]}; '
+                             'node agents own this operation; resolve blockers and retry')
         cluster = catalog['ClusterID']
         if state.get('cluster_id', cluster) != cluster:
             raise ImageError('live cluster identity differs from saved ownership')
@@ -165,13 +220,16 @@ class Scaling:
             spec = known.get(member['Address'])
             if spec is None or spec.get('member_id', member_id) != member_id:
                 raise ImageError('unowned or changed member in cluster catalog')
-            if spec.get('member_id') and any(
+            transitioned = spec.get('member_id') and healing_transition(spec, member, catalog)
+            if spec.get('member_id') and not transitioned and any(
                     key in spec and spec[key] != member[field]
                     for key, field in (('node_name', 'NodeName'), ('node_uid', 'NodeUID'),
                                        ('etcd_member_id', 'EtcdMemberID'), ('role', 'Role'))):
                 raise ImageError('saved node/etcd identity or role changed; refusing reconciliation')
             if not member['Complete']:
-                if step.get('kind') != 'add' or step['spec']['address'] != member['Address']:
+                if transitioned:
+                    raise ImageError('authorized role generation is still enrolling; wait for node agents')
+                if not transitioned and (step.get('kind') != 'add' or step['spec']['address'] != member['Address']):
                     raise ImageError('unrelated pending admission; resume its owner')
                 continue
             node = nodes.get(member['NodeName'])
@@ -182,6 +240,8 @@ class Scaling:
                 addresses = node['Status']['Addresses']
                 if (labels.get('autonomous-rke2.io/host-id') != member_id[:32]
                         or labels.get('autonomous-rke2.io/cluster-id') != cluster
+                        or (member.get('Generation', 0) > 0 and
+                            labels.get('autonomous-rke2.io/generation') != str(member['Generation']))
                         or not any(a['Type'] == 'InternalIP' and a['Address'] == member['Address'] for a in addresses)
                         or ('node-role.kubernetes.io/control-plane' in labels) != (member['Role'] == 'server')
                         or ('node-role.kubernetes.io/etcd' in labels) != (member['Role'] == 'server')):
@@ -193,7 +253,8 @@ class Scaling:
                             or matches[0]['PeerURLs'] != ['https://' + member['Address'] + ':2380']):
                         raise ImageError('etcd identity/peer address differs from catalog')
             spec.update(member_id=member_id, role=member['Role'], node_name=member['NodeName'],
-                        node_uid=member['NodeUID'], etcd_member_id=member['EtcdMemberID'])
+                        node_uid=member['NodeUID'], etcd_member_id=member['EtcdMemberID'],
+                        generation=member.get('Generation', 0))
             if member_id != removed_id:
                 spec['node_labels'] = node['Metadata']['Labels'] or {}
         active_voters = {m['ID'] for m in status['etcd'] if not m.get('IsLearner', False)}
@@ -215,6 +276,15 @@ class Scaling:
         for spec in state['nodes']:
             if (spec.get('member_id') and spec['member_id'] not in members
                     and spec.get('member_id') != removed_id):
+                assignment = (catalog.get('Hosts') or {}).get(spec['member_id']) or {}
+                previous = assignment.get('Previous') or {}
+                if (assignment.get('Role') == 'agent'
+                        and assignment.get('Generation') == spec.get('generation', 0) + 1
+                        and previous.get('NodeUID') == spec.get('node_uid')
+                        and previous.get('EtcdMemberID') == spec.get('etcd_member_id')
+                        and previous.get('Address') == spec['address']):
+                    raise ImageError(f'{spec["name"]}: retired control is pending return as worker; '
+                                     'restore its existing boot artifacts/access, then retry')
                 raise ImageError('saved member is absent from the live catalog')
         state['cluster_id'] = cluster
         return status
@@ -225,12 +295,30 @@ class Scaling:
             try:
                 return self.observe_membership(state)
             except ImageError as exc:
-                if 'no writable control node/quorum available' not in str(exc) or time.monotonic() >= deadline:
+                resumable = any(message in str(exc) for message in (
+                    'no writable control node/quorum available', 'self-healing operation ',
+                    'retired control is pending return as worker', 'authorized role generation is still enrolling'))
+                if not resumable or time.monotonic() >= deadline:
                     raise
                 time.sleep(min(5, max(0, deadline - time.monotonic())))
 
     def describe_scaling(self, state, total, controls):
-        self.observe_membership(state)
+        status = self.coordinator(state, {'action': 'status'})
+        if status['catalog'].get('Healing'):
+            operation = status['catalog']['Healing']
+            print(f'Self-healing operation {operation["ID"]}: {operation["Phase"]}; '
+                  f'blockers: {operation.get("Blocked") or operation.get("Evidence") or "none"}')
+            print('Node agents resume this operation before manual scaling.')
+            return [], len(state['nodes'])
+        try:
+            self.observe_membership(state)
+        except ImageError as exc:
+            if not any(message in str(exc) for message in (
+                    'retired control is pending return as worker', 'authorized role generation is still enrolling')):
+                raise
+            print(str(exc))
+            print('Cluster has degraded capacity; manual scaling waits for the recorded host return.')
+            return [], len(state['nodes'])
         target = state.get('resize') or {'nodes': total, 'controls': controls}
         changes, _ = planned_changes(state['nodes'], target['nodes'], target['controls'])
         peak = resize_peak(state, total, controls)
@@ -389,7 +477,8 @@ class Scaling:
         from lab.libvirt.lifecycle import KUBECTL
         victim = step['victim']
         print(f'Retiring {victim["name"]} ({victim["role"]}), phase {step["phase"]}', flush=True)
-        request = {'operation': state['resize']['id'], 'member_id': victim['member_id']}
+        request = {'operation': state['resize']['id'], 'member_id': victim['member_id'],
+                   'member_generation': victim.get('generation', 0)}
         if step['phase'] == 'ready':
             self.coordinator(state, {**request, 'action': 'retire'}, exclude=victim['member_id'])
             step['phase'] = 'draining'
@@ -421,7 +510,8 @@ class Scaling:
                 # Preserve the current vote until committed removal. This is
                 # essential for 2->1 and avoids losing quorum in degraded clusters.
                 try:
-                    self.management(victim, {'action': 'fence-local', 'member_id': victim['member_id']})
+                    self.management(victim, {'action': 'fence-local', 'member_id': victim['member_id'],
+                                             'member_generation': victim.get('generation', 0)})
                     self.ssh(victim['address'], 'sudo systemctl disable autonomous-rke2-host-agent.service && '
                              'sudo systemctl mask rke2-server.service rke2-agent.service && '
                              'sudo systemctl stop autonomous-rke2-host-agent.service')
@@ -436,7 +526,8 @@ class Scaling:
                     self.fence_vm(victim)
             else:
                 try:
-                    self.management(victim, {'action': 'fence-local', 'member_id': victim['member_id']})
+                    self.management(victim, {'action': 'fence-local', 'member_id': victim['member_id'],
+                                             'member_generation': victim.get('generation', 0)})
                 except (ImageError, OSError, subprocess.SubprocessError):
                     if not force:
                         raise
@@ -538,6 +629,10 @@ class Scaling:
         from lab.libvirt.lifecycle import command, KUBECTL, write_private
         controls = control_count(self.control_nodes)
         print(quorum_message(count, controls))
+        print(f'Self-healing: {"enabled" if self.self_healing["enabled"] else "disabled"}; '
+              f'failure timeout {self.self_healing["failure_timeout"]}')
+        if self.self_healing['enabled'] and count <= controls:
+            print('WARNING: no spare workers at this node/control target; automatic promotion needs an eligible worker.')
         fresh = not self.state_path.exists()
         old = json.loads(self.state_path.read_text()) if not fresh else None
         state = self.load_or_initialize(release, digest(release), old['count'] if old else 1, inventory)
@@ -584,8 +679,18 @@ class Scaling:
                 self.wait_healthy(spec, timeout)
                 health = json.loads(self.ssh(spec['address'], 'sudo /usr/local/libexec/autonomous-rke2/host-agent -health'))
                 spec.update(role=health['Role'], member_id=health['HostID'])
+        if (HEALING_CAPABILITY in manifest.get('capabilities', [])
+                and state.get('cluster_id') and not self.self_healing['enabled']):
+            live = self.coordinator(state, {'action': 'status'})
+            if live['catalog'].get('Healing'):
+                self.coordinator(state, {'action': 'policy',
+                                         'nodes': live['catalog']['DesiredNodes'],
+                                         'self_healing': self.self_healing})
         self.wait_membership(state, timeout)
         self.save(state)
+        if 'control-self-healing-v1' in manifest.get('capabilities', []):
+            self.coordinator(state, {'action': 'policy', 'nodes': count,
+                                     'self_healing': self.self_healing})
         self.reconcile_scaling(state, count, controls, timeout, self.force_remove, release.parent / 'node.qcow2')
         for spec in state['nodes']:
             self.wait_healthy(spec, timeout)

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ func run() int {
 	check := flag.Bool("check", false, "validate common configuration without creating state")
 	health := flag.Bool("health", false, "independently verify local cluster health and emit public evidence")
 	manage := flag.Bool("manage", false, "root-only membership operation: bounded JSON on stdin; public status on stdout")
+	restrict := flag.Bool("restrict", false, "root-only fail-closed control recovery for systemd shutdown")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		return 2
@@ -35,6 +37,17 @@ func run() int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if *restrict {
+		if os.Geteuid() != 0 || *manage || *health || *once || *check {
+			return 2
+		}
+		attempt, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		if formation.Restrict(attempt, s) != nil {
+			return 1
+		}
+		return 0
+	}
 	if *manage {
 		if os.Geteuid() != 0 || *health || *once || *check {
 			return 2
@@ -75,10 +88,13 @@ func run() int {
 		return 0
 	}
 	err = formation.Run(ctx, s, *once, func(err error) {
+		var healing formation.HealingBlocked
 		if err == nil {
 			fmt.Fprintln(os.Stdout, "host-agent: healthy")
+		} else if errors.As(err, &healing) {
+			fmt.Fprintln(os.Stderr, "host-agent:", healing)
 		} else if formation.Permanent(err) {
-			fmt.Fprintln(os.Stderr, "host-agent: reconciliation required; convergence stopped")
+			fmt.Fprintln(os.Stderr, "host-agent: reconciliation required; convergence stopped:", err)
 		} else {
 			fmt.Fprintln(os.Stderr, "host-agent: waiting for cluster or local prerequisites")
 		}

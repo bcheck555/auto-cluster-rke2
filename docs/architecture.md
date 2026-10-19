@@ -56,15 +56,21 @@ TLS. No external VIP, DNS seed, or load balancer is required.
 
 ## Restart and failure boundaries
 
-On reboot, identity and journal load before discovery starts. The node restarts
-its recorded native role with its existing data and credentials, uses saved
-server addresses while discovery recovers, and checks recorded Node/etcd IDs.
+On reboot, identity and journal load before discovery starts. Self-healing-capable
+controls start with a local-only recovery API and existing datastore, then check
+live role authorization before exposing full control services. Valid existing
+voters can restore quorum together; retired generations cannot reclaim a vote.
 Missing completed data, changed configuration, or conflicting cluster identity
-halts convergence. Unattended reset, promotion, removal, and cleanup are absent.
+halts convergence. Lost-quorum reset and new-machine provisioning are absent.
 Explicit [libvirt reconciliation](scaling.md) uses a root-only node management
 CLI, catalog CAS operation ownership, serialized admission, and journaled
 retirement. It replaces roles with fresh nodes and retains retirement tombstones.
-No management operation is exposed on the public enrollment listener.
+Operator management remains a root-only CLI. The authenticated node protocol
+also carries healthy heartbeats, current role authorization, and stop
+acknowledgements. An opt-in healing controller uses the same catalog operation
+ownership as manual scaling, removing a failed voter before admitting its worker
+replacement. Physical signer identities remain stable; fresh role generations
+receive new Node and etcd identities. See [self-healing](self-healing.md).
 
 This design assumes the first node is booted alone, then additional nodes join
 the reachable cluster. ID ordering reduces races among mutually visible fresh

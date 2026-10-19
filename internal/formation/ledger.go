@@ -15,6 +15,13 @@ type Catalog struct {
 	ControlNodes int
 	Retired      map[string]Member
 	Operation    *MembershipOperation
+	DesiredNodes int
+	SelfHealing  HealingPolicy
+	Healing      *HealingOperation
+	History      []HealingOperation
+	Hosts        map[string]HostAssignment
+	Heartbeats   map[string]Heartbeat
+	Observations map[string]FailureObservation
 }
 
 // MembershipOperation is a durable, non-expiring lock. Only its owner may
@@ -44,11 +51,11 @@ type Backend interface {
 
 func validMember(m Member) bool {
 	ip := net.ParseIP(m.Address)
-	return len(m.PublicKey) == ed25519.PublicKeySize && identity.PublicKeyID(m.PublicKey) == m.ID && m.NodeName == "rke2-"+m.ID[:16] && m.RequestID == "initial-"+m.ID && ip != nil && ip.To4() != nil && !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsMulticast()
+	return len(m.PublicKey) == ed25519.PublicKeySize && identity.PublicKeyID(m.PublicKey) == m.ID && m.NodeName == incarnationName(m.ID, m.Generation) && m.RequestID == incarnationRequest(m.ID, m.Generation) && ip != nil && ip.To4() != nil && !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsMulticast()
 }
 
 func sameMember(a, b Member) bool {
-	return a.ID == b.ID && digest(a.PublicKey) == digest(b.PublicKey) && a.NodeName == b.NodeName && a.Address == b.Address && a.RequestID == b.RequestID
+	return a.ID == b.ID && a.Generation == b.Generation && digest(a.PublicKey) == digest(b.PublicKey) && a.NodeName == b.NodeName && a.Address == b.Address && a.RequestID == b.RequestID
 }
 
 // Reserve serializes initial membership. All servers use Kubernetes resourceVersion
@@ -59,8 +66,14 @@ func (c *Catalog) Reserve(request Member) (Member, error) {
 	if !validMember(request) || c.Members == nil || len(c.Members) > 1024 {
 		return Member{}, ErrInvalid
 	}
-	if _, retired := c.Retired[request.ID]; retired {
+	if _, retired := c.Retired[incarnationKey(request)]; retired {
 		return Member{}, ErrConflict
+	}
+	if request.Generation > 0 {
+		assignment, ok := c.Hosts[request.ID]
+		if !ok || assignment.Generation != request.Generation || assignment.Address != request.Address || assignment.Role == "" {
+			return Member{}, ErrConflict
+		}
 	}
 	if !controlTargetValid(c.controlTarget()) {
 		return Member{}, ErrInvalid
@@ -95,6 +108,12 @@ func (c *Catalog) Reserve(request Member) (Member, error) {
 	request.Role = "agent"
 	if servers < c.controlTarget() {
 		request.Role = "server"
+	}
+	if assignment, ok := c.Hosts[request.ID]; ok && request.Generation > 0 {
+		request.Role = assignment.Role
+		if request.Role == "server" && servers >= c.controlTarget() {
+			return Member{}, ErrConflict
+		}
 	}
 	request.Complete = false
 	request.NodeUID = ""

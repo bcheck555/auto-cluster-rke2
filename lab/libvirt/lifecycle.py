@@ -63,6 +63,7 @@ class Lab(Scaling):
                  subnet=None, reserved_cidrs=None, vm=None, enrollment_secret=None, input_files=()):
         self.options = dict(cluster=cluster, hostname_prefix=hostname_prefix, network=network,
                             subnet=subnet, reserved_cidrs=reserved_cidrs, vm=vm)
+        self.self_healing = {'enabled': False, 'failure_timeout': '5m'}
         self.settings = Settings(**self.options)
         self.pool = Path(pool) if pool is not None else self.settings.pool
         self.state_path = self.pool / 'universal-lab.json'
@@ -491,7 +492,11 @@ class Lab(Scaling):
             raise ImageError('a signed universal node release is required')
         self.check_networks(inventory)
         if CAPABILITY in manifest.get('capabilities', []):
+            if self.self_healing['enabled'] and 'control-self-healing-v1' not in manifest.get('capabilities', []):
+                raise ImageError('self_healing requires a new control-self-healing-v1 image; rebuild once with the new release')
             return self.create_scaling(release, manifest, count, timeout, inventory)
+        if self.self_healing['enabled']:
+            raise ImageError('self_healing requires a new control-self-healing-v1 image; rebuild once with the new release')
         if self.control_nodes != 3:
             raise ImageError('control_nodes requires a scaling-capable image; rebuild once with the new release')
         self.check_capacity(count, inventory)
@@ -579,6 +584,8 @@ def main(operation, argv=None):
         lab = Lab(**options, input_files=(config.path, config.env_path) if config else ())
         if operation == 'create':
             lab.control_nodes = control_count(args.control_nodes)
+            if config:
+                lab.self_healing = config.self_healing
             lab.force_remove = args.force_remove
             lab.settings.validate_nodes(args.nodes)
             lab.node_count = args.nodes
@@ -619,6 +626,12 @@ def main(operation, argv=None):
             inventory = lab.inventory()
             lab.check_ownership(inventory)
             if operation == 'create':
+                print(f'Self-healing: {"enabled" if lab.self_healing["enabled"] else "disabled"}; '
+                      f'failure timeout {lab.self_healing["failure_timeout"]}')
+                if lab.self_healing['enabled']:
+                    release = verify_manifest(args.release.resolve())
+                    if 'control-self-healing-v1' not in release.get('capabilities', []):
+                        raise ImageError('self_healing requires a new control-self-healing-v1 image; rebuild once')
                 if lab.state_path.exists():
                     lab.deployment_names(args.nodes)
                     saved = json.loads(lab.state_path.read_text())

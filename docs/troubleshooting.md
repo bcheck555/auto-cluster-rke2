@@ -99,6 +99,32 @@ reported drain blocker, capacity, and quorum, resolve it, then rerun create.
 Changing YAML again does not discard an interrupted operation. See
 [scaling recovery and explicit force behavior](scaling.md#interrupted-or-blocked-changes).
 
+## Automatic control recovery waits or reports a blocker
+
+Check `create.py --config clusters/dev.yaml --plan` and surviving agents'
+journals. Missing heartbeats alone cannot trigger promotion: the recorded Node
+must be unavailable and its exact datastore endpoint must fail verification.
+The failure window restarts after controller failover before commitment.
+
+An enabled policy needs an eligible spare worker and writable quorum. Resolve
+reported PDB, unmanaged-pod, emptyDir, hostPath, or local-volume blockers; recovery
+never uses forced eviction. Restore enough original voters after quorum loss.
+Do not reset etcd or delete operation journals. Once failed-voter removal commits,
+the recorded promotion resumes even if healing is disabled.
+
+## A returning control waits in restricted recovery
+
+An old control must contact authoritative membership before exposing control
+services. A replaced incarnation cannot resume its old role: it receives a new
+generation and returns as a worker. Restore network access to surviving controls
+and inspect the agent journal for authorization or quarantine blockers.
+
+Quarantined credentials/datastore directories remain under
+`.autonomous-role-history/generation-N` beside their former paths. Application
+storage remains in place. Do not restore obsolete membership credentials or
+remove application data to bypass a transition blocker. Missing initialized
+disks require operator recovery; create does not regenerate them.
+
 ## Destroy refuses leftovers
 
 **Causes:** unknown resource consumer; same-named VM outside owned storage;

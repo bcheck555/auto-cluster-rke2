@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -80,8 +81,34 @@ func Run(ctx context.Context, s Settings, once bool, report func(error)) error {
 	if err := n.Restore(ctx); err != nil {
 		return err
 	}
+	gate := &roleGate{node: n, runtime: n.Runtime.(*hostagent.LinuxRuntime), lastAuthorization: time.Now()}
+	n.Gate = gate.Check
+	if n.current.Phase == "Healthy" && n.current.Role == "server" {
+		if err := gate.runtime.RestrictControl(ctx); err != nil && !errors.Is(err, hostagent.ErrRoleDataMissing) {
+			return err
+		}
+		gate.restricted = true
+	}
+	session, err := clusterID()
+	if err != nil {
+		return err
+	}
+	healer := &HealingController{ID: id.ID, Session: session}
+	var reportMu sync.Mutex
+	reportSafe := func(err error) {
+		if report != nil {
+			reportMu.Lock()
+			defer reportMu.Unlock()
+			report(err)
+		}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	go gate.Watch(ctx)
+	go gate.Maintain(ctx)
+	if !once {
+		go healer.Run(ctx, n, reportSafe)
+	}
 	ready := make(chan struct{})
 	d := Discovery{Auth: auth, Interface: iface, Current: n.Current, Ready: ready}
 	n.Find = d.Find
@@ -126,10 +153,16 @@ func Run(ctx context.Context, s Settings, once bool, report func(error)) error {
 		}
 		attempt, stop := context.WithTimeout(ctx, 2*time.Minute)
 		err := n.Step(attempt)
-		stop()
-		if report != nil {
-			report(err)
+		if err == nil {
+			if pulseErr := gate.Pulse(attempt); pulseErr != nil {
+				err = pulseErr
+			}
+			if err == nil {
+				_ = clearTransition(s)
+			}
 		}
+		stop()
+		reportSafe(err)
 		if Permanent(err) {
 			return err
 		}

@@ -39,6 +39,13 @@ def digest(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
+def validation_sources(validator):
+    paths = {Path(validator).resolve(), *(ROOT / 'lab/libvirt').glob('*.py')}
+    paths.update(ROOT / 'lab/packer' / name for name in
+                 ('artifacts.py', 'runtime.py', 'pipeline.py', 'guest.py'))
+    return {str(path.relative_to(ROOT)): digest(path) for path in sorted(paths)}
+
+
 def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

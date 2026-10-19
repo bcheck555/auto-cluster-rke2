@@ -39,6 +39,7 @@ type Node struct {
 	UpdateProxies     func([]Peer)
 	StartedAt         time.Time
 	PublicCertificate func() []byte
+	Gate              func(context.Context, State, []Peer) error
 	mu                sync.RWMutex
 	current           State
 	serving           bool
@@ -78,7 +79,7 @@ func (n *Node) restore(ctx context.Context) error {
 		return err
 	}
 	var s State
-	if durable.Decode([]byte(op.Details), &s) != nil || op.Kind != "self-forming" || op.HostID != n.Auth.Self.ID || op.ClusterID != s.ClusterID || op.Phase != s.Phase || s.Revision != op.Revision || s.Deployment != n.Auth.Deployment || s.Policy != n.Settings.Policy() || s.Address != n.Auth.Self.Address || s.Interface != n.Settings.Interface || s.NodeName != "rke2-"+n.Auth.Self.ID[:16] {
+	if durable.Decode([]byte(op.Details), &s) != nil || op.Kind != "self-forming" || op.HostID != n.Auth.Self.ID || op.ClusterID != s.ClusterID || op.Phase != s.Phase || s.Revision != op.Revision || s.Deployment != n.Auth.Deployment || s.Policy != n.Settings.Policy() || s.Address != n.Auth.Self.Address || s.Interface != n.Settings.Interface || s.NodeName != incarnationName(n.Auth.Self.ID, s.Generation) {
 		return ErrConflict
 	}
 	allowed := map[string]bool{"Selected": true, "Credentialed": true, "Configured": true, "Starting": true, "Healthy": true}
@@ -128,6 +129,7 @@ func (n *Node) save(ctx context.Context, s State) error {
 func (n *Node) plan(s State) hostagent.Plan {
 	credentials := filepath.Join(n.Settings.StateDirectory, "credentials")
 	p := hostagent.Plan{ClusterID: s.ClusterID, PolicyDigest: s.Policy, Mode: s.Mode, Role: s.Role, NodeName: s.NodeName, NodeIP: s.Address, Interface: s.Interface, RegistrationURL: s.RegistrationURL, APIURL: "https://" + API, TokenFile: filepath.Join(credentials, "rke2-token"), CoreImageSHA256: n.Settings.CoreImageSHA256, FlannelImageSHA256: n.Settings.FlannelImageSHA256, CoreDNSSHA256: n.Settings.CoreDNSSHA256, MinVotingServers: 1}
+	p.Generation = s.Generation
 	if s.Role == "server" {
 		p.AgentTokenFile = filepath.Join(credentials, "agent-token")
 	}
@@ -135,7 +137,7 @@ func (n *Node) plan(s State) hostagent.Plan {
 }
 
 func (n *Node) member(s State) Member {
-	return Member{ID: n.Auth.Self.ID, PublicKey: n.Auth.Self.PublicKey, NodeName: s.NodeName, Address: s.Address, RequestID: "initial-" + n.Auth.Self.ID, Role: s.Role}
+	return Member{ID: n.Auth.Self.ID, PublicKey: n.Auth.Self.PublicKey, NodeName: s.NodeName, Address: s.Address, RequestID: incarnationRequest(n.Auth.Self.ID, s.Generation), Role: s.Role, Generation: s.Generation, Complete: s.Phase == "Healthy", NodeUID: s.Evidence.NodeUID, EtcdMemberID: s.Evidence.EtcdMemberID}
 }
 
 func clusterID() (string, error) {
@@ -265,6 +267,11 @@ func (n *Node) step(ctx context.Context) error {
 	if n.UpdateProxies != nil {
 		n.UpdateProxies(servers)
 	}
+	if n.Gate != nil && s.ClusterID != "" && s.Phase == "Healthy" {
+		if err := n.Gate(ctx, s, servers); err != nil {
+			return err
+		}
+	}
 	if s.ClusterID == "" {
 		if selectionErr != nil {
 			return selectionErr
@@ -326,7 +333,7 @@ func (n *Node) step(ctx context.Context) error {
 		return err
 	}
 	if s.Phase == "Credentialed" {
-		if snapshot.HasData || snapshot.Running {
+		if (snapshot.HasData && !s.Transition) || snapshot.Running {
 			return ErrConflict
 		}
 		if err := n.Runtime.Prepare(ctx, p, n.Auth.Self.ID); err != nil {
@@ -351,7 +358,7 @@ func (n *Node) step(ctx context.Context) error {
 		}
 	}
 	if s.Phase == "Configured" {
-		if snapshot.HasData || snapshot.Running {
+		if (snapshot.HasData && !s.Transition) || snapshot.Running {
 			return ErrConflict
 		}
 		s.Phase = "Starting"

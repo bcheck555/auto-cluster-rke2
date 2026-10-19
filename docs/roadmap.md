@@ -4,7 +4,7 @@ Implemented universal-image path:
 
 - Node-resident authenticated multicast discovery and HTTPS enrollment.
 - First-node bootstrap, pending-cluster advertisement, and durable restart.
-- Three-server limit followed by workers, with quorum-backed CAS reservations.
+- Configurable three/five/seven control target, with quorum-backed CAS reservations.
 - Native RKE2 registration failover, local API health proxy, and persisted server endpoints.
 - Distinct server/worker credentials and host-key-bound health certificates.
 - Independent Kubernetes/etcd checks and certificate renewal.
@@ -17,6 +17,9 @@ Implemented universal-image path:
   [configuration reference](cluster-config.md).
 - Journaled node-count and control-target reconciliation for new scaling-capable
   images, explicit drain overrides, serialized etcd retirement, and role replacement.
+- Opt-in, node-resident control healing, protected worker promotion, versioned
+  role authorization, and returning controls re-enrolled as workers. New images
+  require separate healing acceptance before publication.
 
 The fresh universal image passed offline builds and four-clone libvirt
 acceptance: first-alone bootstrap, automatic server/server/worker joins,

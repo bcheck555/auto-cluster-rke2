@@ -5,7 +5,8 @@ image coinstalls both RKE2 roles, contains the agent binary and enabled boot
 service, and selects its role only at runtime. The signed input includes that
 binary, unit and public source snapshot. Fresh candidate validation now boots
 four clones from the same disk, verifies automatic formation and reboot, and
-gates publication on signed evidence for that image. A published node disk can
+exercises manual scaling and opt-in control recovery in separate disposable
+clusters. Publication requires signed evidence for that image. A published node disk can
 be exported as signed raw format without writing a physical device.
 
 Use this procedure to create a new signed universal generation. For deployment,
@@ -172,11 +173,20 @@ Publication requires a signed successful validation report bound to the exact
 candidate manifest digest. Tests boot and reboot all profiles with fresh
 NoCloud metadata, UUIDs, SSH host keys, and NVRAM; check package inventories,
 operator password locks and keys, SELinux, firewalld, masked RKE2, identities,
-and host/external isolation. An ephemeral signing authority authorizes only
-the disposable two-node offline smoke cluster. The smoke workload uses a
-digest reference and `imagePullPolicy: Never`; checks cover Ready nodes,
-system pods, internal DNS, cross-node pod and service traffic, then repeat
-after reboot. Test overlays, grants, token, and authority are discarded.
+and host/external isolation. Four universal clones verify node-resident
+formation, three voters plus a worker, stable identities, internal DNS, and
+cross-node pod/service traffic before and after reboot. Workloads use pinned
+images with `imagePullPolicy: Never`.
+
+Images advertising `membership-reconciliation-v1` also require scaling evidence:
+3/5/7 control targets, workers, deterministic shrinkage, two/one-control warnings,
+role replacements, protected drains, and explicit force behavior. Images with
+`control-self-healing-v1` require an additional five-node failure-injection suite:
+protected drains, promotion, worker return, repeated failure, controller failover,
+partition/reconnect, lost quorum, and simultaneous reboot. It verifies exact
+voters, retired-member absence, workload connectivity, stable physical identities
+and networking, retained local data, and unchanged source YAML/private inputs.
+No existing user cluster is resized or used for failure injection.
 
 Temporary addresses `.241`–`.243` use the existing isolated network and IPv6
 filter after domain/guest/neighbor collision checks. Failed validation never
@@ -185,8 +195,10 @@ Smoke network metadata includes an on-link `10.43.0.0/16` service-subnet route:
 the kernel needs an initial route before kube-proxy can translate Service IPs.
 It adds no default route and applies only to the authorized disposable cluster.
 Unjoined replacement guests receive no cluster routing or bootstrap settings.
-Signed `validation-progress.json` checkpoints preserve completed profile checks
-for retries against the same candidate. Private redacted startup diagnostics
+Signed `validation-progress.json` checkpoints allow completed checks to be reused
+against the same candidate. Scaling/healing reuse also requires matching validator
+and dependency hashes; stale evidence cannot authorize a changed test stage.
+Private redacted startup diagnostics
 remain outside release artifacts.
 
 Normal profile checks execute the helper sealed into each image. Disposable

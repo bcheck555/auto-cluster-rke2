@@ -13,10 +13,12 @@ hypervisor or physical hardware. Both workflows use the same image on all nodes.
 | Look up YAML fields, private inputs, CLI options, and resource names | [Configuration reference](cluster-config.md) |
 | Diagnose configuration, discovery, and restart failures | [Troubleshooting](troubleshooting.md) |
 | Change total nodes or control/worker mix | [Scaling](scaling.md) |
+| Promote spare workers after control failure and safely return old controls | [Self-healing](self-healing.md) |
 | Supply identity, networking, and enrollment to VM or physical clones | [Universal deployment](universal-node.md) |
 | Build, validate, sign, publish, and export images | [Offline image workflow](offline-images.md) |
 | Check what the universal image has actually passed | [Universal image validation](universal-image-results.md) |
 | Check scaling-image artifacts and acceptance coverage | [Scaling image validation](scaling-image-results.md) |
+| Check current healing-image artifacts and failure-injection coverage | [Control-recovery image validation](healing-image-results.md) |
 
 ## Explanations and engineering references
 

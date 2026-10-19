@@ -16,7 +16,7 @@ hostname_prefix: dev-node
 
 # Signed universal release.json. Relative paths resolve from THIS YAML file's
 # directory, not the shell's working directory. The same disk serves every role.
-release: ../lab/artifacts/packer/release-scaling-20261018/release.json
+release: ../lab/artifacts/packer/release-healing-20261018/release.json
 
 # Any positive integer that fits host resources, subnet and image capacity.
 # The current image's membership catalog supports at most 1024 nodes.
@@ -32,6 +32,17 @@ nodes: 3
 # Scaling requires a new release advertising membership-reconciliation-v1;
 # older images need one rebuild. Create never rewrites this YAML or its .env.
 control_nodes: 3
+
+# Optional node-resident control recovery. Requires a new image advertising
+# control-self-healing-v1 and an existing etcd majority; never resets quorum.
+# Reserve spare workers: e.g. nodes: 4 with control_nodes: 3. Replacements use
+# existing workers, not new VMs. Returned, replaced controls rejoin as workers.
+# Drains respect disruption budgets and local data; no automatic force removal.
+self_healing:
+  enabled: false
+  # Continuous failure after missing heartbeat, NotReady/Unknown, and unhealthy
+  # etcd are all observed. Integer durations: s, m, or h; minimum 1m, max 24h.
+  failure_timeout: 5m
 
 # Seconds to wait for each node's independent health check. A failed create can
 # be resumed with the same config. CLI --timeout may override this wait only.

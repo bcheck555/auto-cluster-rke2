@@ -1,5 +1,24 @@
 # Durable identity and operation storage
 
+Automatic recovery uses the quorum-backed membership catalog in addition to
+local identity journals. Mutable policy revisions contain desired node/control
+counts and recovery settings. They remain separate from immutable cluster/image
+identity. Updates use Kubernetes resource-version compare-and-swap after a
+linearizable datastore check.
+
+The catalog records physical host assignments, monotonically increasing role
+generations, authenticated heartbeat sequences, failure observations, and one
+serialized membership operation. Healing journals retain exact failed and
+candidate Node UIDs/etcd IDs, phases, stop acknowledgements, completion evidence,
+and retired membership incarnations. Completed history authorizes CLI adoption
+of role transitions. Persisted observation timestamps are diagnostic: controllers
+measure continuous failure locally and restart uncommitted windows after failover.
+
+Local role-transition intent is synced before credentials are quarantined. A
+retry resumes the same generation without overwriting quarantined state or
+creating another membership identity. Source YAML and `.env` inputs remain
+untouched. See [automatic control recovery](self-healing.md).
+
 The universal node stores its identity in `identity/`, the `formation` operation
 in `formation/`, and private credentials in `credentials/`, beneath
 `/var/lib/autonomous-rke2`. It reuses the storage primitives below. The

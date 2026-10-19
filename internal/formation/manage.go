@@ -17,12 +17,14 @@ import (
 // Management requests are accepted only by the root-only local CLI, never by
 // the enrollment HTTP service. Their operation ID fences concurrent operators.
 type ManagementRequest struct {
-	Action       string `json:"action"`
-	Operation    string `json:"operation"`
-	Nodes        int    `json:"nodes"`
-	ControlNodes int    `json:"control_nodes"`
-	Address      string `json:"address"`
-	MemberID     string `json:"member_id"`
+	Action           string         `json:"action"`
+	Operation        string         `json:"operation"`
+	Nodes            int            `json:"nodes"`
+	ControlNodes     int            `json:"control_nodes"`
+	Address          string         `json:"address"`
+	MemberID         string         `json:"member_id"`
+	MemberGeneration uint64         `json:"member_generation"`
+	SelfHealing      *HealingPolicy `json:"self_healing,omitempty"`
 }
 
 type EtcdMember struct {
@@ -37,7 +39,11 @@ type ManagementNode struct {
 		UID    string
 		Labels map[string]string
 	}
-	Spec   struct{ Unschedulable bool }
+	Spec struct {
+		Unschedulable bool
+		PodCIDR       string
+		PodCIDRs      []string
+	}
 	Status struct {
 		Conditions []struct {
 			Type   string
@@ -66,7 +72,7 @@ func Manage(ctx context.Context, s Settings, request ManagementRequest) (Managem
 		return ManagementStatus{}, ErrConflict
 	}
 	if request.Action == "fence-local" {
-		if request.MemberID != op.HostID {
+		if request.MemberID != op.HostID || request.MemberGeneration != saved.Generation {
 			return ManagementStatus{}, ErrConflict
 		}
 		if err := hostagent.WritePrivateFile(filepath.Join(s.StateDirectory, "retired"), []byte(op.HostID+"\n")); err != nil {
@@ -93,7 +99,7 @@ func (k KubeBackend) etcdMembers(ctx context.Context) ([]EtcdMember, error) {
 	if err != nil || status != 200 || strings.TrimSpace(string(data)) != "ok" {
 		return nil, ErrWaiting
 	}
-	data, status, err = k.call(ctx, true, http.MethodPost, "/v3/cluster/member/list", struct{}{})
+	data, status, err = k.call(ctx, true, http.MethodPost, "/v3/cluster/member/list", map[string]bool{"linearizable": true})
 	if err != nil || status != 200 {
 		return nil, ErrWaiting
 	}
@@ -129,6 +135,26 @@ func (k KubeBackend) managementStatus(ctx context.Context) (ManagementStatus, er
 
 func (k KubeBackend) Manage(ctx context.Context, r ManagementRequest) (ManagementStatus, error) {
 	if r.Action == "status" {
+		return k.managementStatus(ctx)
+	}
+	if r.Action == "policy" {
+		if r.SelfHealing == nil || r.Nodes < 1 || r.Nodes > 1024 {
+			return ManagementStatus{}, ErrInvalid
+		}
+		if _, err := r.SelfHealing.timeout(); err != nil {
+			return ManagementStatus{}, err
+		}
+		err := k.updateCatalog(ctx, func(c *Catalog) error {
+			if c.Operation != nil && (c.DesiredNodes != r.Nodes || c.SelfHealing != *r.SelfHealing) && !(c.Healing != nil && c.DesiredNodes == r.Nodes && !r.SelfHealing.Enabled) {
+				return ErrWaiting
+			}
+			c.DesiredNodes = r.Nodes
+			c.SelfHealing = *r.SelfHealing
+			return nil
+		})
+		if err != nil {
+			return ManagementStatus{}, err
+		}
 		return k.managementStatus(ctx)
 	}
 	if len(r.Operation) != 32 {
@@ -197,9 +223,12 @@ func (k KubeBackend) Manage(ctx context.Context, r ManagementRequest) (Managemen
 			case "retire":
 				m, ok := c.Members[r.MemberID]
 				if !ok {
-					if _, done := c.Retired[r.MemberID]; done {
+					if _, done := c.Retired[incarnationKey(Member{ID: r.MemberID, Generation: r.MemberGeneration})]; done {
 						return k.managementStatus(ctx)
 					}
+					return ManagementStatus{}, ErrConflict
+				}
+				if m.Generation != r.MemberGeneration {
 					return ManagementStatus{}, ErrConflict
 				}
 				if !m.Complete || c.Operation.Address != "" {
@@ -222,9 +251,12 @@ func (k KubeBackend) Manage(ctx context.Context, r ManagementRequest) (Managemen
 			case "remove":
 				m, ok := c.Members[r.MemberID]
 				if !ok {
-					if _, done := c.Retired[r.MemberID]; done {
+					if _, done := c.Retired[incarnationKey(Member{ID: r.MemberID, Generation: r.MemberGeneration})]; done {
 						return k.managementStatus(ctx)
 					}
+					return ManagementStatus{}, ErrConflict
+				}
+				if m.Generation != r.MemberGeneration {
 					return ManagementStatus{}, ErrConflict
 				}
 				if !m.Retiring {
@@ -236,7 +268,7 @@ func (k KubeBackend) Manage(ctx context.Context, r ManagementRequest) (Managemen
 				if c.Retired == nil {
 					c.Retired = map[string]Member{}
 				}
-				c.Retired[m.ID] = m
+				c.Retired[incarnationKey(m)] = m
 				delete(c.Members, m.ID)
 			case "finish":
 				servers := 0

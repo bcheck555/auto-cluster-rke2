@@ -58,6 +58,34 @@ func (s Service) Handler() http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 		switch r.URL.Path {
+		case "/v1/authorize", "/v1/pulse", "/v1/stopped":
+			if m.Kind != "authorize" && m.Kind != "pulse" && m.Kind != "stopped" {
+				fail(400)
+				return
+			}
+			if r.URL.Path != "/v1/"+m.Kind {
+				fail(400)
+				return
+			}
+			k, ok := backend.(KubeBackend)
+			if !ok {
+				fail(503)
+				return
+			}
+			if m.Kind == "stopped" {
+				if err := k.acknowledgeStop(ctx, m.Member); err != nil {
+					fail(409)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]bool{"stopped": true})
+				return
+			}
+			result, err := k.authorization(ctx, m.Member, m.Kind == "pulse", m.Eligible)
+			if err != nil {
+				fail(409)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(result)
 		case "/v1/enroll":
 			if m.Kind != "enroll" {
 				fail(400)
@@ -94,6 +122,10 @@ func (s Service) Handler() http.Handler {
 type Client struct{ Auth Auth }
 
 func (c Client) call(ctx context.Context, peer Peer, kind string, member Member, result any) error {
+	return c.callEligible(ctx, peer, kind, member, false, result)
+}
+
+func (c Client) callEligible(ctx context.Context, peer Peer, kind string, member Member, eligible bool, result any) error {
 	cert, err := PeerCertificate(peer)
 	if err != nil {
 		return err
@@ -109,7 +141,7 @@ func (c Client) call(ctx context.Context, peer Peer, kind string, member Member,
 	}
 	auth := c.Auth
 	auth.Self.ClusterID = peer.ClusterID
-	m, err := auth.Sign(ctx, Message{Kind: kind, Nonce: challenge, Member: member})
+	m, err := auth.Sign(ctx, Message{Kind: kind, Nonce: challenge, Member: member, Eligible: eligible})
 	if err != nil {
 		return err
 	}
@@ -136,6 +168,19 @@ func (c Client) call(ctx context.Context, peer Peer, kind string, member Member,
 		return ErrInvalid
 	}
 	return nil
+}
+
+func (c Client) Authorize(ctx context.Context, peer Peer, m Member, pulse, eligible bool) (RoleAuthorization, error) {
+	kind := "authorize"
+	if pulse {
+		kind = "pulse"
+	}
+	var result RoleAuthorization
+	err := c.callEligible(ctx, peer, kind, m, eligible, &result)
+	if err == nil && (result.ClusterID != peer.ClusterID || result.Policy != peer.Policy || result.Assignment.Address != m.Address || result.Assignment.Generation < m.Generation) {
+		return result, ErrConflict
+	}
+	return result, err
 }
 
 func (c Client) Enroll(ctx context.Context, peer Peer, member Member) (Credentials, error) {

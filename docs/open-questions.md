@@ -17,9 +17,9 @@
   most 64 peers; the 1,024-member catalog limit is a data-structure ceiling,
   not evidence of deployment testing at that size. Recorded runtime acceptance
   covers eight nodes, including seven etcd voters.
-- Define fencing-backed member replacement and disaster recovery separately.
-  Managed libvirt resizing now retires members and replaces roles explicitly;
-  no failure-driven replacement, quorum reset, or in-place promotion is automatic.
+- Validate infrastructure fencing and disaster recovery separately. Opt-in
+  node-resident healing replaces failed controls using existing workers while
+  quorum remains; hypervisor provisioning and lost-quorum reset are absent.
 
 Settled: one universal image, node-resident coordination, first node booted
 alone, common site enrollment secret, configurable control target (default three),

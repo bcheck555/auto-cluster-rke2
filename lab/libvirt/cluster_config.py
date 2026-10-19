@@ -6,7 +6,7 @@ import os
 import re
 import secrets
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from lab.libvirt.settings import Settings
@@ -21,6 +21,7 @@ class ClusterConfig:
     nodes: int
     timeout: int
     control_nodes: int = 3
+    self_healing: dict = field(default_factory=lambda: {'enabled': False, 'failure_timeout': '5m'})
 
     @property
     def env_path(self):
@@ -41,6 +42,20 @@ def mapping(value, name, allowed, required=()):
     if not isinstance(value, dict) or set(value) - set(allowed) or set(required) - set(value):
         raise ImageError(f'{name}: expected mapping with supported keys: {", ".join(allowed)}')
     return value
+
+
+def healing_config(value):
+    value = mapping(value, 'self_healing', ('enabled', 'failure_timeout'))
+    enabled = value.get('enabled', False)
+    duration = value.get('failure_timeout', '5m')
+    if type(enabled) is not bool:
+        raise ImageError('self_healing.enabled must be a boolean')
+    if not isinstance(duration, str) or not re.fullmatch(r'[1-9][0-9]*(s|m|h)', duration):
+        raise ImageError('self_healing.failure_timeout must be a duration such as 60s, 5m, or 1h')
+    seconds = int(duration[:-1]) * {'s': 1, 'm': 60, 'h': 3600}[duration[-1]]
+    if not 60 <= seconds <= 86400:
+        raise ImageError('self_healing.failure_timeout must be between 1m and 24h')
+    return {'enabled': enabled, 'failure_timeout': duration}
 
 
 def read_yaml(path):
@@ -81,7 +96,7 @@ def load_config(path, *, check_siblings=True):
         raise ImageError('cluster config filename must end in .yaml or .yml')
     data = mapping(read_yaml(path), path.name,
                    ('schema', 'cluster', 'hostname_prefix', 'release', 'nodes', 'control_nodes',
-                    'health_timeout', 'network', 'vm'),
+                    'self_healing', 'health_timeout', 'network', 'vm'),
                    ('schema', 'cluster', 'release', 'nodes', 'network'))
     if type(data['schema']) is not int or data['schema'] != 1:
         raise ImageError('cluster config requires schema: 1')
@@ -107,7 +122,8 @@ def load_config(path, *, check_siblings=True):
     if not isinstance(data['release'], str) or not data['release'].strip():
         raise ImageError('release must be a nonempty manifest path')
     release = (path.parent / data['release']).resolve()
-    config = ClusterConfig(path, options, release, data['nodes'], timeout, control_nodes)
+    healing = healing_config(data.get('self_healing', {}))
+    config = ClusterConfig(path, options, release, data['nodes'], timeout, control_nodes, healing)
     for source in (config.path, config.env_path):
         if any(parent.parent == Path('/var/lib/libvirt/images')
                and parent.name.startswith('autonomous-rke2-') for parent in source.parents):

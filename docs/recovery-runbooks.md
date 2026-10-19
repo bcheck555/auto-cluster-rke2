@@ -1,5 +1,11 @@
 # Recovery runbooks (design only; not yet executable)
 
+Historical fencing-based design below. For current universal images, use
+[automatic control recovery](self-healing.md) and [troubleshooting](troubleshooting.md).
+The node-resident implementation uses quorum-backed role generations and startup
+gates; it does not require the external fencing authority described here. Lost
+quorum still blocks ordinary membership changes.
+
 ## Replace one failed RKE2 server
 
 1. Confirm the intended cluster UUID and read exact etcd membership from a healthy API/etcd view.

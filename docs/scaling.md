@@ -58,7 +58,9 @@ the local libvirt host; no persistent external management server is introduced.
   workers first, then excess controls. Highest index is selected within a role.
 - A changed control target reconciles roles even at an unchanged total. A fresh
   node joins and becomes healthy before its counterpart is retired. Initialized
-  nodes never change roles in place.
+  nodes do not change roles in place during manual scaling. Opt-in
+  [automatic control recovery](self-healing.md) instead retains the worker's
+  machine and storage while creating a fresh membership incarnation.
 - Surviving names, IPs, disks, and identities remain unchanged. Removed indices
   can be reused for fresh identities after owned storage and SSH records are cleaned.
 - All membership changes are serialized. A three/five/seven target does not
@@ -113,6 +115,18 @@ commits removal, then power off. Powering off a voter first would make two-to-on
 shrinkage impossible. Workers power off before membership finalization. Retirement
 tombstones reject subsequent enrollment by a retired identity; local retirement
 markers prevent the node agent restarting its old role.
+
+## Automatic recovery and manual scaling
+
+Healing uses the same cluster-resident operation lock as scaling. Create waits
+for committed recovery work, then adopts authenticated generation changes and
+continues its requested target. A promoted worker remains a control; its retired
+predecessor returns as a worker. An offline retired host is reported as pending
+return rather than provisioned again from a missing disk.
+
+Use `--plan` to see operation phases, degraded capacity, and blockers. Autonomous
+healing never inherits `--force-remove`: its drains always protect workloads and
+local data. See [automatic control recovery](self-healing.md).
 
 ## Related information
 

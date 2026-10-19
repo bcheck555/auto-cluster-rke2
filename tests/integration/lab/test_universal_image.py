@@ -123,7 +123,7 @@ class UniversalImageTests(unittest.TestCase):
             self.assertIn('node/host-agent', names)
             self.assertIn('node/host-agent.service', names)
             self.assertEqual(json.loads((root / 'node/capabilities.json').read_text()),
-                             {'capabilities': ['membership-reconciliation-v1']})
+                             {'capabilities': ['membership-reconciliation-v1', 'control-self-healing-v1']})
             self.assertIn('node/source/internal/formation/node.go', names)
             self.assertFalse(any('credentials/' in name or 'enrollment-secret' in name for name in names))
             unit = (root / 'node/host-agent.service').read_text()

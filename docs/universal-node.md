@@ -118,9 +118,11 @@ drivers, and cloud-init behavior still need representative hardware tests.
 ## Restart existing nodes
 
 Preserve `/var/lib/autonomous-rke2` identity, journal, and credentials, and
-`/var/lib/rancher/rke2` data. On reboot, the node restores its recorded role and
-cluster, uses cached server endpoints while discovery recovers, and checks saved
-Node/etcd IDs. Native RKE2 units are not an independent boot path.
+`/var/lib/rancher/rke2` data. On reboot, the node restores its recorded cluster
+and starts existing control data in restricted recovery. Live quorum-backed
+authorization must validate its role generation before full control services
+start. A replaced control returns as a worker. Native RKE2 units are not an
+independent boot path. See [automatic control recovery](self-healing.md).
 
 Restart enough existing voters for etcd quorum. The first-node-alone rule applies
 to new formation, not recovery of an existing three-server cluster.
@@ -132,10 +134,10 @@ slots. Resume the same node. A failure during the two-server stage may prevent
 quorum until that node returns. Do not erase journals or reset etcd to force a join.
 
 Reader and enrollment TLS certificates renew under the same host keys. Site-key
-and CA rotation, abandoned reservation reconciliation, replacement, and upgrades
-need future procedures. Unattended promotion/removal, quorum reset, runtime disk
-cleanup, and fencing are not implemented. Lab teardown is a separate host-side
-operation.
+and CA rotation, abandoned reservation reconciliation, and upgrades need future
+procedures. Opt-in recovery can promote existing workers while quorum remains;
+it cannot reset quorum, provision machines, or repair missing initialized disks.
+Lab teardown remains a separate host-side operation.
 
 ## Related information
 

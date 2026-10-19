@@ -187,7 +187,7 @@ func (r *LinuxRuntime) system(ctx context.Context, action, role string) (string,
 	}
 	var args []string
 	switch action {
-	case "is-active", "is-enabled", "unmask":
+	case "is-active", "is-enabled", "unmask", "stop", "mask":
 		args = []string{action, u}
 	case "start":
 		args = []string{"start", "--no-block", u}

@@ -11,10 +11,11 @@ import (
 )
 
 type Health struct {
-	ClusterID string
-	HostID    string
-	Role      string
-	Evidence  hostagent.Evidence
+	ClusterID  string
+	HostID     string
+	Role       string
+	Evidence   hostagent.Evidence
+	Generation uint64
 }
 
 // CheckHealth independently observes Kubernetes, the immutable cluster marker,
@@ -68,5 +69,5 @@ func CheckHealth(ctx context.Context, s Settings) (Health, error) {
 	if evidence.NodeUID != saved.Evidence.NodeUID || evidence.EtcdClusterID != saved.Evidence.EtcdClusterID || evidence.EtcdMemberID != saved.Evidence.EtcdMemberID {
 		return Health{}, ErrConflict
 	}
-	return Health{ClusterID: op.ClusterID, HostID: op.HostID, Role: saved.Role, Evidence: evidence}, nil
+	return Health{ClusterID: op.ClusterID, HostID: op.HostID, Role: saved.Role, Evidence: evidence, Generation: saved.Generation}, nil
 }

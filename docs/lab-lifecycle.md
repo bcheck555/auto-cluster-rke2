@@ -123,6 +123,34 @@ Missing initialized disk,
 NVRAM, or seed files stop resume rather than generating replacement identities.
 See [troubleshooting](troubleshooting.md).
 
+## Enable automatic control recovery
+
+Use a release advertising `control-self-healing-v1`. Add this to your cluster
+YAML, then publish the policy through create:
+
+```yaml
+self_healing:
+  enabled: true
+  failure_timeout: 5m
+```
+
+```bash
+sudo python3 lab/libvirt/create.py --config clusters/dev.yaml --plan
+sudo python3 lab/libvirt/create.py --config clusters/dev.yaml
+```
+
+Keep spare workers: four nodes with `control_nodes: 3` provide one candidate.
+Without a spare, recovery reports degraded capacity. Existing writable quorum
+and a protected drain are required. Recovery never creates a VM or forces an
+eviction. Older images require one rebuild before enabling this policy.
+
+The plan shows pending healing phases, blockers, and retired hosts awaiting
+return. Restore a returning host's existing disk; its agent joins as a worker.
+Create adopts verified role generations and leaves promoted controls in place.
+An active operation finishes before manual scaling proceeds. Disabling healing
+prevents new operations; committed membership work still finishes.
+See [automatic control recovery](self-healing.md) for detection and startup rules.
+
 ## Destroy and rebuild a cluster
 
 **Destructive operation:** destroy removes workloads and all owned generated

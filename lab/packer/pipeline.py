@@ -190,6 +190,21 @@ def validate_scaling_evidence(candidate, report):
         raise ImageError('scaling-capable release requires complete signed scaling acceptance for this disk')
 
 
+def validate_healing_evidence(candidate, report):
+    if 'control-self-healing-v1' not in candidate.get('capabilities', []):
+        return
+    evidence = report.get('self_healing') or {}
+    required = ('short_shutdown_preserved', 'worker_promoted', 'return_as_worker',
+                'repeated_failure', 'controller_failover', 'partition_reconnect',
+                'simultaneous_reboot', 'protected_drain', 'lost_quorum_blocked',
+                'stable_cluster_identity', 'exact_voters', 'workload_connectivity',
+                'source_inputs_preserved')
+    if (evidence.get('passed') is not True
+            or evidence.get('same_image_sha256') != candidate['profiles']['node']['sha256']
+            or any(evidence.get(name) is not True for name in required)):
+        raise ImageError('successful self-healing acceptance evidence missing or for another image')
+
+
 def publish(input_path, output):
     input_path = Path(input_path).resolve()
     candidate = verify_manifest(input_path)
@@ -213,6 +228,7 @@ def publish(input_path, output):
     if report.get('formation', {}).get('passed') is not True or report['formation'].get('same_image_sha256') != candidate['profiles']['node']['sha256']:
         raise ImageError('universal node formation validation missing or for another image')
     validate_scaling_evidence(candidate, report)
+    validate_healing_evidence(candidate, report)
     output = Path(output).resolve()
     if output.exists():
         raise ImageError("release destination already exists")

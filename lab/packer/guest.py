@@ -87,6 +87,11 @@ def install(profile):
         write("/etc/NetworkManager/conf.d/rke2-flannel.conf",
               "[keyfile]\nunmanaged-devices=interface-name:flannel*;interface-name:cni*;interface-name:veth*\n", 0o644)
     if profile == 'node':
+        # Must exist before systemd establishes the agent's ReadWritePaths.
+        # Native RKE2 otherwise creates it later outside the agent's mount view.
+        node_credentials = Path('/etc/rancher/node')
+        node_credentials.mkdir(parents=True, exist_ok=True)
+        node_credentials.chmod(0o700)
         binary = Path('/usr/local/libexec/autonomous-rke2/host-agent')
         binary.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(payload / 'node/host-agent', binary)

@@ -8,7 +8,7 @@ import uuid
 import secrets
 
 from lab.libvirt.lifecycle import Lab, KUBECTL, virsh, write_private
-from lab.packer.artifacts import ROOT, ImageError, digest, write_json
+from lab.packer.artifacts import ROOT, ImageError, digest, write_json, validation_sources
 
 
 def validate_scaling(candidate_path, candidate, output):
@@ -32,7 +32,7 @@ def validate_scaling(candidate_path, candidate, output):
     lab.input_files = (public, private)
     lab.enrollment_secret = secret
     results = {'passed': False, 'same_image_sha256': candidate['profiles']['node']['sha256'],
-               'validator_sha256': digest(__file__), 'cases': []}
+               'validator_sha256': digest(__file__), 'validator_inputs': validation_sources(__file__), 'cases': []}
     original_cluster = None
     previous = {}
     source = base64.b64encode((ROOT / 'lab/packer/guest.py').read_bytes()).decode()

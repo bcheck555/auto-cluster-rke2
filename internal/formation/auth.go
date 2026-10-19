@@ -33,6 +33,7 @@ type Message struct {
 	IssuedAt   time.Time
 	Peer       Peer
 	Member     Member
+	Eligible   bool
 	Signature  []byte
 	MAC        []byte
 }

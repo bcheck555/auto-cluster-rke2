@@ -3,7 +3,9 @@
 Historical authority-backed lifecycle. The current `cmd/host-agent` uses
 [universal node formation](universal-node.md); its flags, configuration and
 systemd boot path have changed. The following describes the earlier prototype
-and must not be used to configure universal images.
+and must not be used to configure universal images. Current role-generation,
+startup-gate, and promotion behavior is documented in
+[automatic control recovery](self-healing.md) and [formation states](state-machine.md).
 
 `cmd/host-agent` implements initial convergence on the pinned offline Rocky 9.8
 server/agent images. `cmd/bootstrap-authority` serves the existing signed

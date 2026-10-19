@@ -11,17 +11,21 @@ distinguish an empty network from a network partition.
 
 ## Project status
 
-The scaling image passed formation, simultaneous reboot, offline DNS, cross-node
-networking, and resizing through seven controls plus a worker. Physical disk
-export is verified; physical hardware boot validation remains pending.
-See [scaling validation evidence](docs/scaling-image-results.md).
+The current image passed formation, simultaneous reboot, offline DNS, cross-node
+networking, resizing through seven controls plus a worker, and automatic control
+recovery with safe worker return. Signed VM release:
+`lab/artifacts/packer/release-healing-20261018/release.json`.
+Signed raw export is verified against the VM disk.
+Physical hardware boot validation remains pending.
+See [image validation evidence](docs/healing-image-results.md).
 
 The default control-node target is three; `control_nodes` can select three,
 five, or seven. Actual controls are limited by total `nodes`; the remainder are workers.
 One- and two-server clusters are possible, but provide no tolerance for a
 server failure. Scaling-capable images support operator-requested resizing and
-role replacement through create. Unattended failure recovery, in-place role
-promotion, upgrades, and lost-quorum recovery are not implemented.
+role replacement through create. New self-healing-capable images support opt-in
+[automatic worker promotion and safe control return](docs/self-healing.md).
+Upgrades and lost-quorum recovery are not implemented.
 
 Current image pins: Rocky Linux 9.8 amd64, RKE2 v1.37.1+rke2r1, Flannel VXLAN,
 and SELinux Enforcing. Node images have firewalld installed and disabled.
@@ -85,10 +89,26 @@ sudo python3 lab/libvirt/create.py --config clusters/dev.yaml
 ```
 
 Create adds missing nodes, drains/removes excess workers before controls, and
-reconciles role changes with fresh replacements. **Removed/replaced nodes lose
+reconciles role changes with fresh replacements. **Manually removed/replaced nodes lose
 their local disks.** Blocked drains stop by default. Low/even control counts warn
 but are allowed; actual lost quorum blocks changes. Older images require one
 rebuild. See [scaling behavior and recovery](docs/scaling.md).
+
+## Enable automatic control recovery
+
+Use the current self-healing-capable image, reserve an eligible worker, and add
+this policy to the cluster YAML before rerunning create:
+
+```yaml
+self_healing:
+  enabled: true
+  failure_timeout: 5m
+```
+
+Healing defaults off. Four nodes with `control_nodes: 3` provide one spare worker.
+Recovery promotes a worker while quorum remains; a replaced control returns as a
+worker under a fresh membership generation. VMs, addresses, and local data remain
+in place. Older images require one rebuild. See [self-healing](docs/self-healing.md).
 
 ## Documentation
 

@@ -30,6 +30,8 @@ Copy [the commented template](../clusters/cluster.yaml.example). Relative
 | `release` | Yes | Signed universal `release.json` path |
 | `nodes` | Yes | Positive integer; current image catalog limit 1,024; host/subnet limits also apply |
 | `control_nodes` | No | `3`; accepts `3`, `5`, `7`; actual controls limited by total nodes |
+| `self_healing.enabled` | No | Boolean `false`; needs a self-healing-capable image, quorum, and spare workers |
+| `self_healing.failure_timeout` | No | `5m`; positive integer `s`/`m`/`h` duration, between `1m` and `24h` |
 | `health_timeout` | No | `1200` seconds; `1..86400` |
 | `vm.vcpus` | No | `4`; `2..256` |
 | `vm.memory_mib` | No | `8192`; `4096..1048576` |
@@ -46,6 +48,10 @@ lowercase names with digits/hyphens and run plan to validate actual values.
 The loader rejects unknown fields, duplicate keys, aliases, unsafe tags, invalid
 types, and configs over 64 KiB. Config mode cannot mix deployment override flags;
 `--timeout` remains allowed as an operational override.
+
+Rerun create to publish changed self-healing settings into the running cluster.
+Source inputs remain unchanged. See [self-healing](self-healing.md) for failure
+signals, protected drains, role generations, and returning-node behavior.
 
 ## Private input format
 

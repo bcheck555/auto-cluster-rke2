@@ -31,6 +31,20 @@ def root_owner():
 
 
 class ClusterConfigTests(unittest.TestCase):
+    def test_self_healing_defaults_and_strict_duration(self):
+        self.assertEqual(config.load_config(self.path).self_healing,
+                         {'enabled': False, 'failure_timeout': '5m'})
+        for timeout in ('60s', '1m', '5m', '1h', '24h'):
+            self.path.write_text(json.dumps({**document(), 'self_healing':
+                                            {'enabled': True, 'failure_timeout': timeout}}))
+            self.assertEqual(config.load_config(self.path).self_healing['failure_timeout'], timeout)
+        for value in (None, True, {'enabled': 'true'}, {'enabled': 1}, {'timeout': '5m'},
+                      {'failure_timeout': '59s'}, {'failure_timeout': '0m'},
+                      {'failure_timeout': '25h'}, {'failure_timeout': 300}):
+            self.path.write_text(json.dumps({**document(), 'self_healing': value}))
+            with self.assertRaisesRegex(ImageError, 'self_healing'):
+                config.load_config(self.path)
+
     def test_control_targets_default_and_strict_values(self):
         self.assertEqual(config.load_config(self.path).control_nodes, 3)
         for value in (3, 5, 7):

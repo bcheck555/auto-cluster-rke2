@@ -1,5 +1,6 @@
 // Package hostagent implements initial, authorized RKE2 host convergence.
-// Membership replacement, promotion, and data-directory repair are excluded.
+// Role changes require quorum-authorized formation generations; local failure
+// inference and data-directory repair never authorize a new role.
 package hostagent
 
 import (
@@ -7,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -41,6 +43,7 @@ type Plan struct {
 	FlannelImageSHA256 string
 	CoreDNSSHA256      string
 	MinVotingServers   int
+	Generation         uint64
 }
 
 var nodePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -94,6 +97,7 @@ func (p Plan) RenderConfig(host string) ([]byte, error) {
 		return nil, ErrInvalid
 	}
 	config := map[string]any{"selinux": true, "node-name": p.NodeName, "node-ip": p.NodeIP, "token-file": p.TokenFile, "node-label": []string{"autonomous-rke2.io/host-id=" + host[:32], "autonomous-rke2.io/cluster-id=" + p.ClusterID}}
+	config["node-label"] = append(config["node-label"].([]string), fmt.Sprintf("autonomous-rke2.io/generation=%d", p.Generation))
 	config["disable-default-registry-endpoint"] = true
 	if p.Mode == "join" {
 		config["server"] = p.RegistrationURL

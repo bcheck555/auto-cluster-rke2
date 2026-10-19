@@ -191,7 +191,7 @@ createrepo_c /out/rpms
         "source_image_sha256": config["image"]["sha256"], "staging_container": image_pin,
         "packages": json.loads((destination / "packages.json").read_text()),
         "validation_image": workload_pin, "validation_image_digests": workload["RepoDigests"],
-        "capabilities": ["membership-reconciliation-v1"], "files": inventory(destination)}
+        "capabilities": ["membership-reconciliation-v1", "control-self-healing-v1"], "files": inventory(destination)}
     write_json(destination / "input.json", manifest)
     sign(destination / "input.json")
     print("signed input lock: " + str(destination / "input.json"), flush=True)
@@ -222,7 +222,7 @@ def rebind_recipe(source, destination):
     write_json(destination / 'packages.json', manifest['packages'])
     stage_node(destination)
     manifest["parent_input_sha256"] = digest(source)
-    manifest['capabilities'] = ['membership-reconciliation-v1']
+    manifest['capabilities'] = ['membership-reconciliation-v1', 'control-self-healing-v1']
     manifest['validation_image'] = workload_reference(destination / 'runtime/validation-workload.tar')
     manifest["files"] = inventory(destination)
     write_json(destination / "input.json", manifest)
@@ -245,7 +245,7 @@ def stage_node(destination):
     """Compile before sealing the input bundle; offline Packer needs no Go toolchain."""
     target = Path(destination) / 'node'
     target.mkdir()
-    write_json(target / 'capabilities.json', {'capabilities': ['membership-reconciliation-v1']})
+    write_json(target / 'capabilities.json', {'capabilities': ['membership-reconciliation-v1', 'control-self-healing-v1']})
     environment = os.environ.copy()
     environment.update({'CGO_ENABLED': '0', 'GOOS': 'linux', 'GOARCH': 'amd64'})
     run(['go', 'build', '-trimpath', '-o', target / 'host-agent', './cmd/host-agent'], cwd=ROOT, env=environment)

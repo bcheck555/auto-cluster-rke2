@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -22,10 +23,12 @@ import (
 const catalogPath = "/api/v1/namespaces/kube-system/configmaps/autonomous-rke2-membership"
 
 type KubeBackend struct {
-	ClusterID string
-	Policy    string
-	client    func(hostagent.TLSFiles) (*http.Client, error)
-	read      func(string, bool, int64) ([]byte, error)
+	ClusterID    string
+	Policy       string
+	client       func(hostagent.TLSFiles) (*http.Client, error)
+	read         func(string, bool, int64) ([]byte, error)
+	drain        func(context.Context, Member) error
+	connectivity func(context.Context, HealingOperation) error
 }
 
 type configMap struct {
@@ -77,6 +80,9 @@ func (k KubeBackend) call(ctx context.Context, etcd bool, method, path string, v
 	}
 	if value != nil {
 		req.Header.Set("Content-Type", "application/json")
+		if method == http.MethodPatch {
+			req.Header.Set("Content-Type", "application/json-patch+json")
+		}
 	}
 	response, err := client.Do(req)
 	if err != nil {
@@ -158,6 +164,10 @@ func (k KubeBackend) Init(ctx context.Context, first Member) error {
 	if !validMember(first) || first.Role != "server" || !first.Complete || first.NodeUID == "" || first.EtcdMemberID == "" {
 		return ErrInvalid
 	}
+	if observed, err := k.observed(ctx, first); err == nil {
+		first.PodCIDR = observed.PodCIDR
+		first.PodCIDRs = observed.PodCIDRs
+	}
 	c, _, status, err := k.load(ctx)
 	if err != nil {
 		return err
@@ -212,6 +222,8 @@ func (k KubeBackend) change(ctx context.Context, request Member, complete bool) 
 			record.Complete = true
 			record.NodeUID = evidence.NodeUID
 			record.EtcdMemberID = evidence.EtcdMemberID
+			record.PodCIDR = evidence.PodCIDR
+			record.PodCIDRs = evidence.PodCIDRs
 			c.Members[record.ID] = record
 		} else {
 			record, err = c.Reserve(request)
@@ -237,7 +249,16 @@ func (k KubeBackend) change(ctx context.Context, request Member, complete bool) 
 }
 
 func (k KubeBackend) Claim(ctx context.Context, m Member) (Member, error) {
-	return k.change(ctx, m, false)
+	member, err := k.change(ctx, m, false)
+	if err != nil {
+		return member, err
+	}
+	if member.Generation > 0 {
+		if err := k.preserveNodeNetwork(ctx, member); err != nil {
+			return Member{}, err
+		}
+	}
+	return member, nil
 }
 func (k KubeBackend) Complete(ctx context.Context, m Member) (Member, error) {
 	return k.change(ctx, m, true)
@@ -255,6 +276,8 @@ func (k KubeBackend) observed(ctx context.Context, m Member) (Member, error) {
 		}
 		Spec struct {
 			Unschedulable bool
+			PodCIDR       string
+			PodCIDRs      []string
 			Taints        []struct{ Effect string }
 		}
 		Status struct {
@@ -263,6 +286,9 @@ func (k KubeBackend) observed(ctx context.Context, m Member) (Member, error) {
 		}
 	}
 	if json.Unmarshal(data, &node) != nil || node.Metadata.UID == "" || node.Metadata.Labels["autonomous-rke2.io/host-id"] != m.ID[:32] || node.Metadata.Labels["autonomous-rke2.io/cluster-id"] != k.ClusterID {
+		return Member{}, ErrConflict
+	}
+	if m.Generation > 0 && node.Metadata.Labels["autonomous-rke2.io/generation"] != fmt.Sprint(m.Generation) {
 		return Member{}, ErrConflict
 	}
 	_, server := node.Metadata.Labels["node-role.kubernetes.io/control-plane"]
@@ -290,6 +316,8 @@ func (k KubeBackend) observed(ctx context.Context, m Member) (Member, error) {
 		}
 	}
 	m.NodeUID = node.Metadata.UID
+	m.PodCIDR = node.Spec.PodCIDR
+	m.PodCIDRs = node.Spec.PodCIDRs
 	if m.Role == "server" {
 		data, status, err = k.call(ctx, true, http.MethodGet, "/readyz", nil)
 		if err != nil || status != 200 || strings.TrimSpace(string(data)) != "ok" {

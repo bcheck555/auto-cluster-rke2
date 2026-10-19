@@ -426,6 +426,22 @@ def test_candidate(candidate_path, output):
         return _test_candidate(candidate_path, output)
 
 
+def cached_acceptance(candidate, evidence, name, validator):
+    """Caller already verified the checkpoint signature and candidate digest."""
+    if not isinstance(evidence, dict) or evidence.get('validator_sha256') != digest(validator):
+        return False
+    from .artifacts import validation_sources
+    if evidence.get('validator_inputs') != validation_sources(validator):
+        return False
+    from .pipeline import validate_scaling_evidence, validate_healing_evidence
+    check = {'scaling': validate_scaling_evidence, 'self_healing': validate_healing_evidence}[name]
+    try:
+        check(candidate, {name: evidence})
+    except ImageError:
+        return False
+    return True
+
+
 def _test_candidate(candidate_path, output):
     if os.geteuid() != 0:
         raise ImageError('libvirt validation requires root')
@@ -449,6 +465,7 @@ def _test_candidate(candidate_path, output):
     results['test_runner_sha256'] = hashlib.sha256(runner).hexdigest()
     checkpoint = output.parent / 'validation-progress.json'
     cached_formation = None
+    cached_scaling = cached_healing = None
     if checkpoint.exists():
         from .artifacts import trust, verify_signature
         fingerprint, keyring = trust()
@@ -458,6 +475,8 @@ def _test_candidate(candidate_path, output):
             raise ImageError('validation checkpoint belongs to a different candidate')
         results['profiles'] = previous.get('profiles', {})
         cached_formation = previous.get('formation')
+        cached_scaling = previous.get('scaling')
+        cached_healing = previous.get('self_healing')
     def save_progress():
         write_json(checkpoint, results)
         sign(checkpoint)
@@ -523,7 +542,20 @@ def _test_candidate(candidate_path, output):
                     discard(spec)
             owned.clear()
             from .scaling_acceptance import validate_scaling
-            results['scaling'] = validate_scaling(candidate_path, candidate, output)
+            if cached_acceptance(candidate, cached_scaling, 'scaling', ROOT / 'lab/packer/scaling_acceptance.py'):
+                results['scaling'] = cached_scaling
+                print('reused signed scaling evidence for this disk and validator', flush=True)
+            else:
+                results['scaling'] = validate_scaling(candidate_path, candidate, output)
+            save_progress()
+        if 'control-self-healing-v1' in candidate.get('capabilities', []):
+            from .healing_acceptance import validate_healing
+            if cached_acceptance(candidate, cached_healing, 'self_healing', ROOT / 'lab/packer/healing_acceptance.py'):
+                results['self_healing'] = cached_healing
+                print('reused signed healing evidence for this disk and validator', flush=True)
+            else:
+                results['self_healing'] = validate_healing(candidate_path, candidate, output)
+            save_progress()
         isolation()
         results['passed'] = True
     except Exception:
