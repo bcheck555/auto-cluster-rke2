@@ -15,9 +15,22 @@ Existing lab machines and prior signed releases remain untouched.
 
 ## Before you begin
 
-Run from the checkout root. Provide the Go toolchain pinned in `go.mod`, the
-image pipeline's Packer/QEMU tools, artifact signing credentials, and trusted
-verification files. Inspect available options with:
+Run from the checkout root on a Linux amd64 KVM host. Provide:
+
+- Python 3 with [lab/requirements.txt](../lab/requirements.txt), including in the interpreter used by `sudo`.
+- The Go toolchain pinned in `go.mod` for connected input preparation.
+- Docker with daemon access for connected RPM staging and the validation workload archive.
+- QEMU/KVM, system libvirt (`virsh`), `qemu-img`, `genisoimage`, SSH tools,
+  GnuPG (`gpg` and `gpgv`), `ip`, `unshare`, and sudo access. Builds invoke
+  `sudo -n` for an isolated network namespace; authorize sudo in the shell first.
+- `/usr/share/OVMF/OVMF_CODE_4M.fd` and `/usr/share/OVMF/OVMF_VARS_4M.fd`.
+- Artifact signing credentials and independently trusted verification files.
+
+Connected `lock` downloads and verifies the pinned Packer and QEMU plugin;
+you do not need a separate global Packer installation. The wrapper builds
+[image.pkr.hcl](../lab/packer/image.pkr.hcl) using these verified local tools.
+Use the wrapper below so input verification, network isolation, sealing,
+acceptance, and signing run together. Inspect available options with:
 
 ```bash
 python3 -B lab/packer/images.py --help
@@ -35,8 +48,34 @@ Build/test use cached inputs. Acceptance needs system libvirt/KVM and capacity
 for four disposable 8-GiB guests, retained allocations, QEMU overhead, and host
 reserves. It may use owned size-limited tmpfs for temporary storage after
 reserving its full size against available RAM.
+Scaling acceptance reaches eight guests; healing acceptance uses five. Capacity
+checks run per stage. Build preflight also reserves 300 GiB disk and 32 GiB RAM
+for the host, in addition to its build budget and existing commitments.
+
+On a new checkout, connected `lock` initializes a local signing identity if one
+does not exist. Its fingerprint will differ from the published project key
+above. Verify your own key through an independent channel before deployment;
+do not expect a locally generated key to verify someone else's release.
 
 ## Build a new generation
+
+For a local rebuild using the retained verified downloads, run this sequence
+from the checkout root. Use a normal SSH shell and stop if any command fails;
+do not publish a candidate whose acceptance failed.
+
+```bash
+sudo -v
+generation="$(date +%Y%m%d-%H%M%S)"
+artifacts="$PWD/lab/artifacts/packer"
+python3 -B lab/packer/images.py lock --from-lock "$artifacts/input-healing-20261018-v6/input.json" --output "$artifacts/input-$generation"
+python3 -B lab/packer/images.py build --input "$artifacts/input-$generation/input.json" --output "$artifacts/candidate-$generation"
+sudo -E python3 -B lab/packer/images.py test --input "$artifacts/candidate-$generation/candidate.json" --output "$artifacts/candidate-$generation/validation.json"
+python3 -B lab/packer/images.py publish --input "$artifacts/candidate-$generation/candidate.json" --output "$artifacts/release-$generation"
+```
+
+For a fresh checkout without the cached input, use `lock --output` without
+`--from-lock` instead. The stages below explain both paths and optional raw
+export. Building a new generation does not change any cluster's configured release.
 
 Replace the `/path/to/new-*` paths with distinct, unused generation directories.
 Do not reuse a published generation directory.
@@ -73,7 +112,9 @@ Do not reuse a published generation directory.
 
    Four clones must form server/server/server/worker, reboot with unchanged
    cluster/host/Node/etcd identities, and pass offline DNS and cross-node service
-   and pod checks. Existing lab guests are not modified. A failure blocks publish.
+   and pod checks. Scaling and self-healing capabilities also require their
+   separate disposable acceptance suites, described under validation policy.
+   Existing lab guests are not modified. A failure blocks publish.
 
 4. Publish the verified candidate:
 
@@ -81,7 +122,8 @@ Do not reuse a published generation directory.
    python3 -B lab/packer/images.py publish --input /path/to/new-build/candidate.json --output /path/to/new-release
    ```
 
-   Publication requires signed formation evidence for that disk. Lab create
+   Publication requires signed profile, formation, scaling, and self-healing
+   evidence for the capabilities advertised by that exact disk. Lab create
    verifies the published release against trusted signing material before
    provisioning. Do not edit published manifests or hashes.
 
@@ -99,8 +141,9 @@ hardware boot compatibility. Continue with [universal deployment](universal-node
 For VM automation, set the public cluster YAML's `release` to the new manifest;
 paths resolve from the YAML directory. Existing deployments require recreation.
 
-See [universal validation evidence](universal-image-results.md) for the recorded
-release and checks already completed.
+See [current validation evidence](healing-image-results.md) for the recorded
+release and checks already completed, and the [artifact inventory](image-artifacts.md)
+for the purpose and retention requirements of each output.
 
 ## Historical separate-role image and replacement record
 

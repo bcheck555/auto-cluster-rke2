@@ -25,7 +25,7 @@ BRIDGE = 'virbr-rke2'
 # Historical four-node list for legacy callers; provisioning uses node_names(count).
 NAMES = tuple(f'rke2-node{i:02}' for i in range(1, 5))
 LEGACY_NAMES = ('rke2-r9-cp01', 'rke2-r9-cp02', 'rke2-r9-cp03', 'rke2-r9-worker01')
-DEFAULT_RELEASE = ROOT / 'lab/artifacts/packer/release-scaling-20261018/release.json'
+DEFAULT_RELEASE = ROOT / 'lab/artifacts/packer/release-healing-20261018/release.json'
 HEALTH = 'sudo /usr/local/libexec/autonomous-rke2/host-agent -health'
 KUBECTL = 'sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml'
 

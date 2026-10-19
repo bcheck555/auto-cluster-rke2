@@ -1,5 +1,12 @@
 # Scaling image validation
 
+Historical record: this release and its disk exports have been removed locally.
+Use the [current healing release](healing-image-results.md), which also passed
+scaling acceptance. Paths below identify the original validation artifacts;
+they are not current deployment instructions. Compact evidence is archived under
+`lab/artifacts/packer/retained-evidence/`; deleted disks cannot be reconstructed
+from those manifests alone.
+
 The `release-scaling-20261018` universal image passed disposable libvirt
 formation and scaling acceptance. Every guest used the same signed candidate
 disk. Validation created isolated networks and owned VM resources; existing

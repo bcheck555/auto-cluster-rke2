@@ -16,7 +16,7 @@ No guest Internet connection is required during deployment.
   `/usr/share/OVMF/OVMF_VARS_4M.fd`.
 - Have a published signed universal release, its referenced artifacts, and the
   repository's artifact trust files. The template points to the locally built
-  `lab/artifacts/packer/release-scaling-20261018/release.json`; a fresh checkout
+  `lab/artifacts/packer/release-healing-20261018/release.json`; a fresh checkout
   does not include ignored artifacts. See the [image workflow](offline-images.md)
   if they are missing. Do not create an unsigned replacement manifest.
 - Reserve an unused private IPv4 subnet outside pod CIDR `10.42.0.0/16` and

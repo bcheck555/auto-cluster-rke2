@@ -16,6 +16,7 @@ hypervisor or physical hardware. Both workflows use the same image on all nodes.
 | Promote spare workers after control failure and safely return old controls | [Self-healing](self-healing.md) |
 | Supply identity, networking, and enrollment to VM or physical clones | [Universal deployment](universal-node.md) |
 | Build, validate, sign, publish, and export images | [Offline image workflow](offline-images.md) |
+| Identify current images, build inputs, evidence, and cleanup dependencies | [Image artifact inventory](image-artifacts.md) |
 | Check what the universal image has actually passed | [Universal image validation](universal-image-results.md) |
 | Check scaling-image artifacts and acceptance coverage | [Scaling image validation](scaling-image-results.md) |
 | Check current healing-image artifacts and failure-injection coverage | [Control-recovery image validation](healing-image-results.md) |

@@ -1,5 +1,10 @@
 # Offline image execution record
 
+Historical record: these separate-role images and transfer bundle have been
+removed locally. Use the [current artifact inventory](image-artifacts.md) and
+[build workflow](offline-images.md) for new images. Paths below record past
+execution and do not imply that old disks remain available for rollback.
+
 Signed release published on 2026-10-16 EDT (2026-10-17 UTC). Implementation
 branch: `feat/autonomous-rke2`; no commit or push requested.
 

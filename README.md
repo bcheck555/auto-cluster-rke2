@@ -18,6 +18,9 @@ recovery with safe worker return. Signed VM release:
 Signed raw export is verified against the VM disk.
 Physical hardware boot validation remains pending.
 See [image validation evidence](docs/healing-image-results.md).
+For every retained image and supporting artifact, see the
+[artifact inventory](docs/image-artifacts.md). To build a new Packer image, follow
+[build, validate, and publish](docs/offline-images.md#build-a-new-generation).
 
 The default control-node target is three; `control_nodes` can select three,
 five, or seven. Actual controls are limited by total `nodes`; the remainder are workers.

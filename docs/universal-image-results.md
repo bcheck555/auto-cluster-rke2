@@ -1,8 +1,11 @@
 # Universal image validation
 
-This records the original image. For the current resizing-capable release, see
-[scaling image validation](scaling-image-results.md). Existing clusters created
-from this original image require one rebuild to enable resizing.
+This records the original image, whose release and disk exports have been
+removed locally. For the current release with resizing and self-healing, see
+[control-recovery image validation](healing-image-results.md). Paths below are
+historical; compact evidence remains under `lab/artifacts/packer/retained-evidence/`.
+Existing clusters created from this original image require one rebuild to
+enable resizing and self-healing.
 
 The universal node image passed clean libvirt acceptance and was published
 locally as `release-universal-20261017`. All four guests cloned the same sealed
