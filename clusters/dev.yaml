@@ -10,16 +10,39 @@ schema: 1
 # a deployment, destroy it using its old identity before changing this value.
 cluster: dev
 
-# Stable role-neutral hostnames: dev-node01, dev-node02, etc. Maximum 61 chars.
+# Stable role-neutral hostnames: dev-node01, dev-node02, etc. Maximum 61 chars,
+# Use a shorter prefix when needed so prefix plus numeric index stays within 63.
 hostname_prefix: dev-node
 
 # Signed universal release.json. Relative paths resolve from THIS YAML file's
 # directory, not the shell's working directory. The same disk serves every role.
-release: ../lab/artifacts/packer/release-scaling-20261018/release.json
+release: ../lab/artifacts/packer/release-20261018-205625/release.json
 
-# Currently supported: 3 = three servers; 4 = three servers plus one worker.
-# Role assignment is automatic; per-node roles/seed addresses are not inputs.
-nodes: 4
+# Any positive integer that fits host resources, subnet and image capacity.
+# The current image's membership catalog supports at most 1024 nodes.
+# Rerun create after editing this total: supported images add/retire nodes.
+# Retiring a node deletes its local disk. Back up application data first.
+nodes: 5
+
+# Desired control-plane/etcd target: exactly 3, 5, or 7; optional, default 3.
+# Actual controls = min(nodes, control_nodes); remaining nodes are workers.
+# Smaller/even actual control counts warn about quorum resilience but are allowed.
+# Changing this target also replaces roles at an unchanged total, one node at a
+# time, adding a healthy replacement before retirement. Reserve one extra VM.
+# Scaling requires a new release advertising membership-reconciliation-v1;
+# older images need one rebuild. Create never rewrites this YAML or its .env.
+control_nodes: 3
+
+# Optional node-resident control recovery. Requires a new image advertising
+# control-self-healing-v1 and an existing etcd majority; never resets quorum.
+# Reserve spare workers: e.g. nodes: 4 with control_nodes: 3. Replacements use
+# existing workers, not new VMs. Returned, replaced controls rejoin as workers.
+# Drains respect disruption budgets and local data; no automatic force removal.
+self_healing:
+  enabled: true
+  # Continuous failure after missing heartbeat, NotReady/Unknown, and unhealthy
+  # etcd are all observed. Integer durations: s, m, or h; minimum 1m, max 24h.
+  failure_timeout: 5m
 
 # Seconds to wait for each node's independent health check. A failed create can
 # be resumed with the same config. CLI --timeout may override this wait only.
@@ -39,7 +62,8 @@ network:
   name: dev-private
 
   # Required in YAML: explicit RFC1918 IPv4 subnet, /28 or larger.
-  # Hypervisor = network address +1; nodes = +11, +12, +13, optionally +14.
+  # Hypervisor = subnet +1; nodes = +11 onward, ending before the broadcast IP.
+  # /28 fits 4 nodes; /24 fits 244. Select a larger subnet for additional nodes.
   # Check all host/libvirt/Kubernetes/VPN ranges before choosing this value.
   # This range is only an example; --plan reports local conflicts.
   subnet: 192.168.100.0/24
